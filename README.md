@@ -1,4 +1,4 @@
-# SAL Pixie for Home Assistant
+# Pixie Mesh for Home Assistant
 
 Home Assistant integration for SAL Pixie BLE mesh wall switches.
 
@@ -7,7 +7,7 @@ Home Assistant integration for SAL Pixie BLE mesh wall switches.
 ### HACS (recommended)
 
 1. Add this repository as a custom repository in HACS
-2. Search for "SAL Pixie" and install
+2. Search for "Pixie Mesh" and install
 3. Restart Home Assistant
 
 ### Manual
@@ -16,12 +16,10 @@ Copy `custom_components/piggsydust/` to your Home Assistant `config/custom_compo
 
 ## Setup
 
-The integration will auto-discover SAL Pixie gateways via Bluetooth. You can also add one manually via **Settings > Devices & Services > Add Integration > SAL Pixie**.
+The integration will auto-discover Pixie mesh gateways via Bluetooth. You can also add one manually via **Settings > Devices & Services > Add Integration > Pixie Mesh**.
 
 You will need:
-- **Mesh name** — the name of your Pixie mesh network
-- **Mesh password** — the mesh password
-- **Gateway BLE address** — the Bluetooth address of your gateway (manual setup only)
+- **Home key** — found in the Pixie app under Home Management > Share Home (shown as "KEY")
 
 ## HomeKit
 
