@@ -2,7 +2,7 @@
 
 from homeassistant.helpers.device_registry import DeviceInfo
 
-DOMAIN = "piggsydust"
+DOMAIN = "pigsydust"
 
 MESH_NAME = "Smart Light"  # Fixed — firmware default, not user-configurable.
 

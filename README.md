@@ -12,7 +12,7 @@ Home Assistant integration for SAL Pixie BLE mesh wall switches.
 
 ### Manual
 
-Copy `custom_components/piggsydust/` to your Home Assistant `config/custom_components/` directory.
+Copy `custom_components/pigsydust/` to your Home Assistant `config/custom_components/` directory.
 
 ## Setup
 

@@ -9,8 +9,8 @@ from datetime import timedelta
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-from piggsydust import DeviceStatus, PixieClient
-from piggsydust.crypto import LoginError
+from pigsydust import DeviceStatus, PixieClient
+from pigsydust.crypto import LoginError
 
 _LOGGER = logging.getLogger(__name__)
 

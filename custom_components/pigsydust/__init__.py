@@ -12,7 +12,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryNotReady
-from piggsydust import PixieClient
+from pigsydust import PixieClient
 
 from .const import CONF_MESH_PASSWORD, DOMAIN, MESH_NAME
 from .coordinator import PixieCoordinator

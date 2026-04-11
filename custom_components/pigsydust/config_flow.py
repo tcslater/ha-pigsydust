@@ -9,7 +9,7 @@ import voluptuous as vol
 from homeassistant.components.bluetooth import BluetoothServiceInfoBleak
 from homeassistant.config_entries import ConfigFlow
 from homeassistant.data_entry_flow import FlowResult
-from piggsydust.crypto import LoginError
+from pigsydust.crypto import LoginError
 
 from .const import CONF_MESH_PASSWORD, DOMAIN, MESH_NAME
 
@@ -97,7 +97,7 @@ class PixieConfigFlow(ConfigFlow, domain=DOMAIN):
         from bleak import BleakClient
         from bleak_retry_connector import establish_connection
         from homeassistant.components.bluetooth import async_ble_device_from_address
-        from piggsydust import PixieClient
+        from pigsydust import PixieClient
 
         ble_device = async_ble_device_from_address(self.hass, address, connectable=True)
         if ble_device is None:
