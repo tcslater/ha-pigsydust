@@ -7,7 +7,6 @@ DOMAIN = "piggsydust"
 MESH_NAME = "Smart Light"  # Fixed — firmware default, not user-configurable.
 
 CONF_MESH_PASSWORD = "home_key"
-CONF_GATEWAY_ADDRESS = "gateway_address"
 
 
 def MESH_DEVICE_INFO(entry) -> DeviceInfo:

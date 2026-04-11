@@ -9,10 +9,9 @@ import voluptuous as vol
 from homeassistant.components.bluetooth import BluetoothServiceInfoBleak
 from homeassistant.config_entries import ConfigFlow
 from homeassistant.data_entry_flow import FlowResult
-from piggsydust import PixieClient
 from piggsydust.crypto import LoginError
 
-from .const import CONF_GATEWAY_ADDRESS, CONF_MESH_PASSWORD, DOMAIN, MESH_NAME
+from .const import CONF_MESH_PASSWORD, DOMAIN, MESH_NAME
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -42,59 +41,52 @@ class PixieConfigFlow(ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             assert self._discovery_info is not None
-            address = self._discovery_info.address
             error = await self._test_connection(
-                address, user_input[CONF_MESH_PASSWORD]
+                self._discovery_info.address, user_input[CONF_MESH_PASSWORD]
             )
             if error is None:
                 return self.async_create_entry(
                     title="Pixie Mesh",
-                    data={
-                        CONF_GATEWAY_ADDRESS: address,
-                        CONF_MESH_PASSWORD: user_input[CONF_MESH_PASSWORD],
-                    },
+                    data={CONF_MESH_PASSWORD: user_input[CONF_MESH_PASSWORD]},
                 )
             errors["base"] = error
 
         return self.async_show_form(
             step_id="bluetooth_confirm",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_MESH_PASSWORD): str,
-                }
-            ),
+            data_schema=vol.Schema({vol.Required(CONF_MESH_PASSWORD): str}),
             errors=errors,
         )
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Handle manual setup."""
+        """Handle manual setup — just asks for the home key."""
         errors: dict[str, str] = {}
 
         if user_input is not None:
             await self.async_set_unique_id(DOMAIN)
             self._abort_if_unique_id_configured()
 
-            error = await self._test_connection(
-                user_input[CONF_GATEWAY_ADDRESS],
-                user_input[CONF_MESH_PASSWORD],
-            )
-            if error is None:
-                return self.async_create_entry(
-                    title="Pixie Mesh",
-                    data=user_input,
+            # Find any Pixie device to test the credentials.
+            from . import _find_best_pixie_device
+
+            address = _find_best_pixie_device(self.hass)
+            if address is None:
+                errors["base"] = "cannot_connect"
+            else:
+                error = await self._test_connection(
+                    address, user_input[CONF_MESH_PASSWORD]
                 )
-            errors["base"] = error
+                if error is None:
+                    return self.async_create_entry(
+                        title="Pixie Mesh",
+                        data={CONF_MESH_PASSWORD: user_input[CONF_MESH_PASSWORD]},
+                    )
+                errors["base"] = error
 
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_GATEWAY_ADDRESS): str,
-                    vol.Required(CONF_MESH_PASSWORD): str,
-                }
-            ),
+            data_schema=vol.Schema({vol.Required(CONF_MESH_PASSWORD): str}),
             errors=errors,
         )
 
@@ -105,25 +97,22 @@ class PixieConfigFlow(ConfigFlow, domain=DOMAIN):
         from bleak import BleakClient
         from bleak_retry_connector import establish_connection
         from homeassistant.components.bluetooth import async_ble_device_from_address
+        from piggsydust import PixieClient
 
         ble_device = async_ble_device_from_address(self.hass, address, connectable=True)
         if ble_device is None:
-            client = PixieClient(address)
-            try:
-                await client.connect()
-            except Exception:
-                _LOGGER.debug("Connection failed", exc_info=True)
-                return "cannot_connect"
-        else:
-            try:
-                ble_client = await establish_connection(
-                    BleakClient, ble_device, address, max_attempts=3,
-                )
-            except Exception:
-                _LOGGER.debug("Connection failed", exc_info=True)
-                return "cannot_connect"
-            client = PixieClient(address)
-            client.set_ble_client(ble_client)
+            return "cannot_connect"
+
+        try:
+            ble_client = await establish_connection(
+                BleakClient, ble_device, address, max_attempts=3,
+            )
+        except Exception:
+            _LOGGER.debug("Connection failed", exc_info=True)
+            return "cannot_connect"
+
+        client = PixieClient(address)
+        client.set_ble_client(ble_client)
 
         try:
             await client.login(MESH_NAME, mesh_password)

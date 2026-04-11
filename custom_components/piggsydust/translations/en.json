@@ -4,10 +4,9 @@
     "step": {
       "user": {
         "title": "Pixie Mesh",
-        "description": "Enter your home key and gateway BLE address.",
+        "description": "Enter your home key to connect to the mesh.",
         "data": {
-          "home_key": "Home key",
-          "gateway_address": "Gateway BLE address"
+          "home_key": "Home key"
         },
         "data_description": {
           "home_key": "Found in the Pixie app under Home Management \u2192 Share Home (shown as \"KEY\")"
@@ -15,7 +14,7 @@
       },
       "bluetooth_confirm": {
         "title": "Pixie Mesh Discovered",
-        "description": "A Pixie mesh gateway was found. Enter your home key to connect.",
+        "description": "A Pixie mesh device was found. Enter your home key to connect.",
         "data": {
           "home_key": "Home key"
         },
@@ -25,7 +24,7 @@
       }
     },
     "error": {
-      "cannot_connect": "Failed to connect to gateway",
+      "cannot_connect": "No Pixie device found or connection failed",
       "invalid_auth": "Invalid home key"
     },
     "abort": {

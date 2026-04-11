@@ -14,7 +14,7 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryNotReady
 from piggsydust import PixieClient
 
-from .const import CONF_GATEWAY_ADDRESS, CONF_MESH_PASSWORD, DOMAIN, MESH_NAME
+from .const import CONF_MESH_PASSWORD, DOMAIN, MESH_NAME
 from .coordinator import PixieCoordinator
 
 _LOGGER = logging.getLogger(__name__)
