@@ -1,0 +1,35 @@
+{
+  "title": "PiggsyDust",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Pixie Mesh",
+        "description": "Enter your home key and gateway BLE address.",
+        "data": {
+          "home_key": "Home key",
+          "gateway_address": "Gateway BLE address"
+        },
+        "data_description": {
+          "home_key": "Found in the Pixie app under Home Management \u2192 Share Home (shown as \"KEY\")"
+        }
+      },
+      "bluetooth_confirm": {
+        "title": "Pixie Mesh Discovered",
+        "description": "A Pixie mesh gateway was found. Enter your home key to connect.",
+        "data": {
+          "home_key": "Home key"
+        },
+        "data_description": {
+          "home_key": "Found in the Pixie app under Home Management \u2192 Share Home (shown as \"KEY\")"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to gateway",
+      "invalid_auth": "Invalid home key"
+    },
+    "abort": {
+      "already_configured": "Already configured"
+    }
+  }
+}

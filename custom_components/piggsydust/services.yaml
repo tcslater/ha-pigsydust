@@ -1,0 +1,37 @@
+set_indicator:
+  name: Set indicator
+  description: Set the indicator LED colour on all mesh switches.
+  fields:
+    mode:
+      name: Mode
+      description: Indicator colour mode.
+      required: true
+      selector:
+        select:
+          options:
+            - label: "Off"
+              value: "off"
+            - label: "Blue"
+              value: "blue"
+            - label: "Orange"
+              value: "orange"
+            - label: "Purple"
+              value: "purple"
+    brightness:
+      name: Brightness
+      description: Orange/purple brightness (0-15). Ignored for blue and off.
+      default: 15
+      selector:
+        number:
+          min: 0
+          max: 15
+          step: 1
+          mode: slider
+
+all_on:
+  name: All on
+  description: Turn on all switches in the mesh.
+
+all_off:
+  name: All off
+  description: Turn off all switches in the mesh.
