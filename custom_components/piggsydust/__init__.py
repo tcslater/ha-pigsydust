@@ -28,11 +28,37 @@ SERVICE_ALL_ON = "all_on"
 SERVICE_ALL_OFF = "all_off"
 
 
-async def _connect_and_login(hass: HomeAssistant, address: str, password: str) -> PixieClient:
-    """Establish a BLE connection via HA's bluetooth stack and login."""
+def _find_best_pixie_device(hass: HomeAssistant) -> str | None:
+    """Find the strongest Pixie BLE device visible to HA's bluetooth stack."""
+    from homeassistant.components.bluetooth import async_discovered_service_info
+
+    best_address = None
+    best_rssi = -999
+
+    for info in async_discovered_service_info(hass, connectable=True):
+        if 0x0211 in (info.manufacturer_data or {}):
+            if info.rssi > best_rssi:
+                best_rssi = info.rssi
+                best_address = info.address
+                _LOGGER.debug(
+                    "Pixie candidate: %s (%s) RSSI=%d",
+                    info.address, info.name, info.rssi,
+                )
+
+    if best_address:
+        _LOGGER.info("Selected Pixie device: %s (RSSI=%d)", best_address, best_rssi)
+    return best_address
+
+
+async def _connect_and_login(hass: HomeAssistant, password: str) -> PixieClient:
+    """Connect to the best available Pixie device and login."""
+    address = _find_best_pixie_device(hass)
+    if address is None:
+        raise ConfigEntryNotReady("No Pixie mesh device found via HA bluetooth")
+
     ble_device = async_ble_device_from_address(hass, address, connectable=True)
     if ble_device is None:
-        raise ConfigEntryNotReady(f"Device {address} not found via HA bluetooth")
+        raise ConfigEntryNotReady(f"Device {address} disappeared during connect")
 
     ble_client = await establish_connection(
         client_class=BleakClient,
@@ -55,10 +81,9 @@ async def _connect_and_login(hass: HomeAssistant, address: str, password: str) -
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Pixie Mesh from a config entry."""
-    address = entry.data[CONF_GATEWAY_ADDRESS]
     password = entry.data[CONF_MESH_PASSWORD]
 
-    client = await _connect_and_login(hass, address, password)
+    client = await _connect_and_login(hass, password)
 
     coordinator = PixieCoordinator(hass, client)
     await coordinator.async_config_entry_first_refresh()
@@ -68,7 +93,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "client": client,
         "coordinator": coordinator,
         "indicator_modes": {},
-        "address": address,
         "password": password,
     }
 

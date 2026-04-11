@@ -72,12 +72,11 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         return result
 
     async def _try_reconnect(self) -> None:
-        """Attempt to reconnect via HA's bluetooth stack."""
+        """Attempt to reconnect to the best available Pixie device."""
         from .const import DOMAIN
 
         for data in self.hass.data.get(DOMAIN, {}).values():
             if data.get("client") is self.client:
-                address = data["address"]
                 password = data["password"]
                 break
         else:
@@ -85,7 +84,7 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
 
         try:
             from . import _connect_and_login
-            new_client = await _connect_and_login(self.hass, address, password)
+            new_client = await _connect_and_login(self.hass, password)
             self._unsubscribe()
             self.client = new_client
             self._unsubscribe = new_client.on_status_update(self._on_push_update)
