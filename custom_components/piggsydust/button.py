@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
@@ -65,7 +67,10 @@ class PixieMeshButton(ButtonEntity):
 
 
 class PixieIdentifyButton(CoordinatorEntity[PixieCoordinator], ButtonEntity):
-    """Per-device identify button — flashes the LED for 15 seconds."""
+    """Per-device identify button — flashes the LED for 15 seconds.
+
+    Press once to start, press again to stop early.
+    """
 
     has_entity_name = True
     _attr_name = "Identify"
@@ -84,6 +89,27 @@ class PixieIdentifyButton(CoordinatorEntity[PixieCoordinator], ButtonEntity):
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, f"{entry.entry_id}_{address}")},
         )
+        self._active = False
+        self._reset_handle: asyncio.TimerHandle | None = None
 
     async def async_press(self) -> None:
-        await self.coordinator.client.find_me(self._address)
+        if self._active:
+            await self.coordinator.client.find_me(self._address, start=False)
+            self._cancel_timer()
+            self._active = False
+        else:
+            await self.coordinator.client.find_me(self._address, start=True)
+            self._active = True
+            # Auto-reset after 15 seconds (device stops blinking on its own).
+            self._cancel_timer()
+            loop = self.hass.loop
+            self._reset_handle = loop.call_later(15, self._auto_reset)
+
+    def _cancel_timer(self) -> None:
+        if self._reset_handle is not None:
+            self._reset_handle.cancel()
+            self._reset_handle = None
+
+    def _auto_reset(self) -> None:
+        self._active = False
+        self._reset_handle = None
