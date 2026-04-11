@@ -50,7 +50,9 @@ def _find_best_pixie_device(hass: HomeAssistant) -> str | None:
     return best_address
 
 
-async def _connect_and_login(hass: HomeAssistant, password: str) -> PixieClient:
+async def _connect_and_login(
+    hass: HomeAssistant, password: str, disconnect_callback=None
+) -> PixieClient:
     """Connect to the best available Pixie device and login."""
     address = _find_best_pixie_device(hass)
     if address is None:
@@ -65,6 +67,7 @@ async def _connect_and_login(hass: HomeAssistant, password: str) -> PixieClient:
         device=ble_device,
         name=address,
         max_attempts=3,
+        disconnected_callback=disconnect_callback,
     )
 
     client = PixieClient(address)
@@ -86,6 +89,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     client = await _connect_and_login(hass, password)
 
     coordinator = PixieCoordinator(hass, client)
+
+    # Register disconnect callback now that coordinator exists.
+    if client._client is not None:
+        client._client.set_disconnected_callback(coordinator._on_disconnect)
+
     await coordinator.async_config_entry_first_refresh()
 
     hass.data.setdefault(DOMAIN, {})
