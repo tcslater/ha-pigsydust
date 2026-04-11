@@ -1,12 +1,10 @@
-"""Data update coordinator for SAL Pixie."""
+"""Data update coordinator for Pixie Mesh."""
 
 from __future__ import annotations
 
 import logging
 from datetime import timedelta
-from typing import Any
 
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -22,11 +20,10 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
     """Coordinate data updates from a Pixie mesh."""
 
     def __init__(self, hass: HomeAssistant, client: PixieClient) -> None:
-        """Initialise coordinator."""
         super().__init__(
             hass,
             _LOGGER,
-            name="SAL Pixie",
+            name="Pixie Mesh",
             update_interval=SCAN_INTERVAL,
             always_update=False,
         )
@@ -34,22 +31,54 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         self._unsubscribe = client.on_status_update(self._on_push_update)
 
     def _on_push_update(self, status: DeviceStatus) -> None:
-        """Handle a push status notification from the mesh."""
         if self.data is None:
             self.data = {}
         self.data[status.address] = status
         self.async_set_updated_data(self.data)
 
     async def _async_update_data(self) -> dict[int, DeviceStatus]:
-        """Poll all device statuses."""
         try:
-            return await self.client.query_status()
+            result = await self.client.query_status()
         except LoginError as err:
             raise ConfigEntryAuthFailed from err
+        except ConnectionError:
+            _LOGGER.warning("BLE connection lost, attempting reconnect")
+            await self._try_reconnect()
+            raise UpdateFailed("BLE connection lost — reconnecting")
         except Exception as err:
             raise UpdateFailed(f"Error querying status: {err}") from err
 
+        # Merge with existing data so we don't lose devices that didn't
+        # respond in this particular poll cycle.
+        if self.data:
+            merged = dict(self.data)
+            merged.update(result)
+            return merged
+        return result
+
+    async def _try_reconnect(self) -> None:
+        """Attempt to reconnect via HA's bluetooth stack."""
+        from .const import DOMAIN
+
+        for data in self.hass.data.get(DOMAIN, {}).values():
+            if data.get("client") is self.client:
+                address = data["address"]
+                password = data["password"]
+                break
+        else:
+            return
+
+        try:
+            from . import _connect_and_login
+            new_client = await _connect_and_login(self.hass, address, password)
+            self._unsubscribe()
+            self.client = new_client
+            self._unsubscribe = new_client.on_status_update(self._on_push_update)
+            data["client"] = new_client
+            _LOGGER.info("Reconnected to %s", address)
+        except Exception:
+            _LOGGER.debug("Reconnect failed, will retry next poll", exc_info=True)
+
     async def async_shutdown(self) -> None:
-        """Clean up on shutdown."""
         self._unsubscribe()
         await super().async_shutdown()

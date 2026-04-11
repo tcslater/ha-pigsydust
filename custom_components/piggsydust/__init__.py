@@ -28,10 +28,8 @@ SERVICE_ALL_ON = "all_on"
 SERVICE_ALL_OFF = "all_off"
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up Pixie Mesh from a config entry."""
-    address = entry.data[CONF_GATEWAY_ADDRESS]
-
+async def _connect_and_login(hass: HomeAssistant, address: str, password: str) -> PixieClient:
+    """Establish a BLE connection via HA's bluetooth stack and login."""
     ble_device = async_ble_device_from_address(hass, address, connectable=True)
     if ble_device is None:
         raise ConfigEntryNotReady(f"Device {address} not found via HA bluetooth")
@@ -47,10 +45,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     client.set_ble_client(ble_client)
 
     try:
-        await client.login(MESH_NAME, entry.data[CONF_MESH_PASSWORD])
+        await client.login(MESH_NAME, password)
     except Exception as err:
         await ble_client.disconnect()
         raise ConfigEntryNotReady(f"Login failed: {err}") from err
+
+    return client
+
+
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Set up Pixie Mesh from a config entry."""
+    address = entry.data[CONF_GATEWAY_ADDRESS]
+    password = entry.data[CONF_MESH_PASSWORD]
+
+    client = await _connect_and_login(hass, address, password)
 
     coordinator = PixieCoordinator(hass, client)
     await coordinator.async_config_entry_first_refresh()
@@ -60,6 +68,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "client": client,
         "coordinator": coordinator,
         "indicator_modes": {},
+        "address": address,
+        "password": password,
     }
 
     _register_services(hass)
