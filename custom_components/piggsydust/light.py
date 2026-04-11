@@ -84,7 +84,17 @@ class PixieLight(CoordinatorEntity[PixieCoordinator], LightEntity):
         return self._address in self.coordinator.data
 
     async def async_turn_on(self, **kwargs: Any) -> None:
-        await self.coordinator.client.turn_on(self._address)
+        try:
+            await self.coordinator.client.turn_on(self._address)
+        except ConnectionError:
+            await self.coordinator.reconnect_and_retry(
+                lambda c: c.turn_on(self._address)
+            )
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        await self.coordinator.client.turn_off(self._address)
+        try:
+            await self.coordinator.client.turn_off(self._address)
+        except ConnectionError:
+            await self.coordinator.reconnect_and_retry(
+                lambda c: c.turn_off(self._address)
+            )

@@ -79,6 +79,14 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         except Exception:
             _LOGGER.debug("Reconnect failed, will retry next poll", exc_info=True)
 
+    async def reconnect_and_retry(self, action) -> None:
+        """Reconnect then retry an action (for use by entity commands)."""
+        await self._try_reconnect()
+        if self.client.is_connected:
+            await action(self.client)
+        else:
+            raise ConnectionError("Could not reconnect to mesh")
+
     async def async_shutdown(self) -> None:
         self._unsubscribe()
         await super().async_shutdown()
