@@ -19,7 +19,7 @@ from .coordinator import PixieCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.SWITCH, Platform.SELECT, Platform.NUMBER, Platform.BUTTON]
+PLATFORMS = [Platform.LIGHT, Platform.SELECT, Platform.NUMBER, Platform.BUTTON]
 
 ATTR_MODE = "mode"
 ATTR_BRIGHTNESS = "brightness"

@@ -1,10 +1,10 @@
-"""Switch platform for SAL Pixie devices."""
+"""Light platform for SAL Pixie devices."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from homeassistant.components.switch import SwitchDeviceClass, SwitchEntity
+from homeassistant.components.light import ColorMode, LightEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -24,25 +24,25 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up switch entities from a config entry."""
+    """Set up light entities from a config entry."""
     data = hass.data[DOMAIN][entry.entry_id]
     coordinator: PixieCoordinator = data["coordinator"]
     client = data["client"]
 
     entities = [
-        PixieSwitch(coordinator, entry, address, status, client)
+        PixieLight(coordinator, entry, address, status, client)
         for address, status in (coordinator.data or {}).items()
     ]
     async_add_entities(entities, update_before_add=False)
 
 
-class PixieSwitch(CoordinatorEntity[PixieCoordinator], SwitchEntity):
-    """A SAL Pixie wall switch."""
+class PixieLight(CoordinatorEntity[PixieCoordinator], LightEntity):
+    """A SAL Pixie wall switch exposed as a light."""
 
     has_entity_name = True
     _attr_name = None
-    _attr_device_class = SwitchDeviceClass.SWITCH
-    _attr_icon = "mdi:light-switch"
+    _attr_color_mode = ColorMode.ONOFF
+    _attr_supported_color_modes = {ColorMode.ONOFF}
 
     def __init__(
         self,
@@ -52,7 +52,6 @@ class PixieSwitch(CoordinatorEntity[PixieCoordinator], SwitchEntity):
         status: DeviceStatus,
         client,
     ) -> None:
-        """Initialise switch entity."""
         super().__init__(coordinator)
         self._address = address
         self._attr_unique_id = f"{entry.entry_id}_{address}"
@@ -69,7 +68,6 @@ class PixieSwitch(CoordinatorEntity[PixieCoordinator], SwitchEntity):
 
     @property
     def is_on(self) -> bool | None:
-        """Return true if the switch is on."""
         if self.coordinator.data is None:
             return None
         status = self.coordinator.data.get(self._address)
@@ -79,7 +77,6 @@ class PixieSwitch(CoordinatorEntity[PixieCoordinator], SwitchEntity):
 
     @property
     def available(self) -> bool:
-        """Return true if the device is reachable."""
         if not super().available:
             return False
         if self.coordinator.data is None:
@@ -87,9 +84,7 @@ class PixieSwitch(CoordinatorEntity[PixieCoordinator], SwitchEntity):
         return self._address in self.coordinator.data
 
     async def async_turn_on(self, **kwargs: Any) -> None:
-        """Turn the switch on."""
         await self.coordinator.client.turn_on(self._address)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        """Turn the switch off."""
         await self.coordinator.client.turn_off(self._address)
