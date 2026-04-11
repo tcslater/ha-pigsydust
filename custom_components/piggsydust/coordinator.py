@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import timedelta
 
 from homeassistant.core import HomeAssistant
@@ -14,6 +15,10 @@ from piggsydust.crypto import LoginError
 _LOGGER = logging.getLogger(__name__)
 
 SCAN_INTERVAL = timedelta(seconds=60)
+
+# After a command, ignore poll results for this device for N seconds
+# to prevent stale broadcast data from overwriting optimistic state.
+_COMMAND_GRACE_SECS = 5
 
 
 class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
@@ -29,6 +34,11 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         )
         self.client = client
         self._unsubscribe = client.on_status_update(self._on_push_update)
+        self._command_timestamps: dict[int, float] = {}  # addr -> time.monotonic()
+
+    def mark_commanded(self, address: int) -> None:
+        """Mark a device as recently commanded (suppresses poll overwrite)."""
+        self._command_timestamps[address] = time.monotonic()
 
     def _on_push_update(self, status: DeviceStatus) -> None:
         if self.data is None:
@@ -48,11 +58,16 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         except Exception as err:
             raise UpdateFailed(f"Error querying status: {err}") from err
 
-        # Merge with existing data so we don't lose devices that didn't
-        # respond in this particular poll cycle.
+        # Merge with existing data. Skip poll results for devices that
+        # were recently commanded (grace period prevents stale broadcast
+        # data from overwriting optimistic state).
+        now = time.monotonic()
         if self.data:
             merged = dict(self.data)
-            merged.update(result)
+            for addr, status in result.items():
+                cmd_time = self._command_timestamps.get(addr, 0)
+                if now - cmd_time > _COMMAND_GRACE_SECS:
+                    merged[addr] = status
             return merged
         return result
 

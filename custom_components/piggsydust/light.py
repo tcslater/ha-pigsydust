@@ -90,6 +90,7 @@ class PixieLight(CoordinatorEntity[PixieCoordinator], LightEntity):
             await self.coordinator.reconnect_and_retry(
                 lambda c: c.turn_on(self._address)
             )
+        self._optimistic_set(True)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         try:
@@ -98,3 +99,19 @@ class PixieLight(CoordinatorEntity[PixieCoordinator], LightEntity):
             await self.coordinator.reconnect_and_retry(
                 lambda c: c.turn_off(self._address)
             )
+        self._optimistic_set(False)
+
+    def _optimistic_set(self, is_on: bool) -> None:
+        """Update local state immediately after sending a command."""
+        self.coordinator.mark_commanded(self._address)
+        if self.coordinator.data is None:
+            return
+        current = self.coordinator.data.get(self._address)
+        if current is not None:
+            self.coordinator.data[self._address] = DeviceStatus(
+                address=current.address,
+                is_on=is_on,
+                device_type=current.device_type,
+                mac=current.mac,
+            )
+        self.async_write_ha_state()
