@@ -29,24 +29,43 @@ SERVICE_ALL_OFF = "all_off"
 
 
 def _find_best_pixie_device(hass: HomeAssistant) -> str | None:
-    """Find the strongest Pixie BLE device visible to HA's bluetooth stack."""
+    """Find the strongest Pixie BLE device visible to HA's bluetooth stack.
+
+    Prefers gateway devices (type 0x47) over leaf nodes (0x45).
+    Any mesh node can be used as a gateway, but devices advertising as
+    0x47 are more likely to accept connections reliably.
+    """
     from homeassistant.components.bluetooth import async_discovered_service_info
 
     best_address = None
     best_rssi = -999
+    best_is_gateway = False
 
     for info in async_discovered_service_info(hass, connectable=True):
-        if 0x0211 in (info.manufacturer_data or {}):
-            if info.rssi > best_rssi:
-                best_rssi = info.rssi
-                best_address = info.address
-                _LOGGER.debug(
-                    "Pixie candidate: %s (%s) RSSI=%d",
-                    info.address, info.name, info.rssi,
-                )
+        mfr_data = info.manufacturer_data or {}
+        if 0x0211 not in mfr_data:
+            continue
+
+        data = mfr_data[0x0211]
+        is_gateway = len(data) >= 15 and data[14] == 0x47
+
+        _LOGGER.debug(
+            "Pixie candidate: %s (%s) RSSI=%d gateway=%s",
+            info.address, info.name, info.rssi, is_gateway,
+        )
+
+        # Prefer gateways; among same type, prefer strongest RSSI.
+        if (is_gateway and not best_is_gateway) or \
+           (is_gateway == best_is_gateway and info.rssi > best_rssi):
+            best_rssi = info.rssi
+            best_address = info.address
+            best_is_gateway = is_gateway
 
     if best_address:
-        _LOGGER.info("Selected Pixie device: %s (RSSI=%d)", best_address, best_rssi)
+        _LOGGER.info(
+            "Selected Pixie device: %s (RSSI=%d, gateway=%s)",
+            best_address, best_rssi, best_is_gateway,
+        )
     return best_address
 
 

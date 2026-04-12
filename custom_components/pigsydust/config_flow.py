@@ -101,26 +101,31 @@ class PixieConfigFlow(ConfigFlow, domain=DOMAIN):
 
         ble_device = async_ble_device_from_address(self.hass, address, connectable=True)
         if ble_device is None:
+            _LOGGER.warning("BLE device %s not found in HA bluetooth cache", address)
             return "cannot_connect"
 
+        _LOGGER.warning("Attempting connection to %s", address)
         try:
             ble_client = await establish_connection(
                 BleakClient, ble_device, address, max_attempts=3,
             )
         except Exception:
-            _LOGGER.debug("Connection failed", exc_info=True)
+            _LOGGER.warning("Connection to %s failed", address, exc_info=True)
             return "cannot_connect"
 
+        _LOGGER.warning("Connected, attempting login")
         client = PixieClient(address)
         client.set_ble_client(ble_client)
 
         try:
             await client.login(MESH_NAME, mesh_password)
         except LoginError:
+            _LOGGER.warning("Login failed: invalid credentials")
             return "invalid_auth"
         except Exception:
-            _LOGGER.debug("Login failed", exc_info=True)
+            _LOGGER.warning("Login failed", exc_info=True)
             return "cannot_connect"
         finally:
             await client.disconnect()
+        _LOGGER.warning("Login successful")
         return None
