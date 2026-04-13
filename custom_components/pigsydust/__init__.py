@@ -62,7 +62,11 @@ def _find_best_pixie_device(hass: HomeAssistant) -> str | None:
     return best_address
 
 
-async def _connect_and_login(hass: HomeAssistant, password: str) -> PixieClient:
+async def _connect_and_login(
+    hass: HomeAssistant,
+    password: str,
+    disconnect_callback: callable | None = None,
+) -> PixieClient:
     """Connect to the best available Pixie device using standalone BleakClient.
 
     We use HA's bluetooth stack only for discovery (finding the address).
@@ -73,7 +77,7 @@ async def _connect_and_login(hass: HomeAssistant, password: str) -> PixieClient:
     if address is None:
         raise ConfigEntryNotReady("No Pixie mesh device found via HA bluetooth")
 
-    client = PixieClient(address)
+    client = PixieClient(address, disconnect_callback=disconnect_callback)
     try:
         await client.connect()
     except Exception as err:
@@ -95,6 +99,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     client = await _connect_and_login(hass, password)
 
     coordinator = PixieCoordinator(hass, client)
+    client.set_disconnect_callback(coordinator._on_disconnect)
     await coordinator.async_config_entry_first_refresh()
 
     hass.data.setdefault(DOMAIN, {})
