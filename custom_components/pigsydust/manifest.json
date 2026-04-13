@@ -1,6 +1,6 @@
 {
   "domain": "pigsydust",
-  "name": "Pixie Mesh",
+  "name": "PigsyDust",
   "version": "0.1.0",
   "codeowners": ["@tcslater"],
   "config_flow": true,
