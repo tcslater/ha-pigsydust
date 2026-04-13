@@ -5,9 +5,7 @@ from __future__ import annotations
 import logging
 
 import voluptuous as vol
-from bleak import BleakClient
-from bleak_retry_connector import establish_connection
-from homeassistant.components.bluetooth import async_ble_device_from_address
+from homeassistant.components.bluetooth import async_discovered_service_info
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
@@ -32,11 +30,7 @@ def _find_best_pixie_device(hass: HomeAssistant) -> str | None:
     """Find the strongest Pixie BLE device visible to HA's bluetooth stack.
 
     Prefers gateway devices (type 0x47) over leaf nodes (0x45).
-    Any mesh node can be used as a gateway, but devices advertising as
-    0x47 are more likely to accept connections reliably.
     """
-    from homeassistant.components.bluetooth import async_discovered_service_info
-
     best_address = None
     best_rssi = -999
     best_is_gateway = False
@@ -54,7 +48,6 @@ def _find_best_pixie_device(hass: HomeAssistant) -> str | None:
             info.address, info.name, info.rssi, is_gateway,
         )
 
-        # Prefer gateways; among same type, prefer strongest RSSI.
         if (is_gateway and not best_is_gateway) or \
            (is_gateway == best_is_gateway and info.rssi > best_rssi):
             best_rssi = info.rssi
@@ -69,33 +62,27 @@ def _find_best_pixie_device(hass: HomeAssistant) -> str | None:
     return best_address
 
 
-async def _connect_and_login(
-    hass: HomeAssistant, password: str, disconnect_callback=None
-) -> PixieClient:
-    """Connect to the best available Pixie device and login."""
+async def _connect_and_login(hass: HomeAssistant, password: str) -> PixieClient:
+    """Connect to the best available Pixie device using standalone BleakClient.
+
+    We use HA's bluetooth stack only for discovery (finding the address).
+    The actual connection uses PixieClient's standalone connect() which
+    creates a raw BleakClient with proper service discovery.
+    """
     address = _find_best_pixie_device(hass)
     if address is None:
         raise ConfigEntryNotReady("No Pixie mesh device found via HA bluetooth")
 
-    ble_device = async_ble_device_from_address(hass, address, connectable=True)
-    if ble_device is None:
-        raise ConfigEntryNotReady(f"Device {address} disappeared during connect")
-
-    ble_client = await establish_connection(
-        client_class=BleakClient,
-        device=ble_device,
-        name=address,
-        max_attempts=3,
-        disconnected_callback=disconnect_callback,
-    )
-
     client = PixieClient(address)
-    client.set_ble_client(ble_client)
+    try:
+        await client.connect()
+    except Exception as err:
+        raise ConfigEntryNotReady(f"Connection to {address} failed: {err}") from err
 
     try:
         await client.login(MESH_NAME, password)
     except Exception as err:
-        await ble_client.disconnect()
+        await client.disconnect()
         raise ConfigEntryNotReady(f"Login failed: {err}") from err
 
     return client
@@ -108,11 +95,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     client = await _connect_and_login(hass, password)
 
     coordinator = PixieCoordinator(hass, client)
-
-    # Register disconnect callback now that coordinator exists.
-    if client._client is not None:
-        client._client.set_disconnected_callback(coordinator._on_disconnect)
-
     await coordinator.async_config_entry_first_refresh()
 
     hass.data.setdefault(DOMAIN, {})
@@ -140,19 +122,16 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 def _get_client(hass: HomeAssistant) -> PixieClient:
-    """Get the PixieClient from the first config entry."""
     for entry_data in hass.data.get(DOMAIN, {}).values():
         return entry_data["client"]
     raise ValueError("No Pixie Mesh integration configured")
 
 
 def _register_services(hass: HomeAssistant) -> None:
-    """Register custom services (idempotent)."""
     if hass.services.has_service(DOMAIN, SERVICE_SET_INDICATOR):
         return
 
     async def handle_set_indicator(call: ServiceCall) -> None:
-        """Set the indicator LED on all mesh devices."""
         client = _get_client(hass)
         mode = call.data[ATTR_MODE]
         brightness = call.data.get(ATTR_BRIGHTNESS, 15)
@@ -183,12 +162,10 @@ def _register_services(hass: HomeAssistant) -> None:
     )
 
     async def handle_all_on(call: ServiceCall) -> None:
-        """Turn on all mesh devices."""
         client = _get_client(hass)
         await client.turn_on(0xFFFF)
 
     async def handle_all_off(call: ServiceCall) -> None:
-        """Turn off all mesh devices."""
         client = _get_client(hass)
         await client.turn_off(0xFFFF)
 
