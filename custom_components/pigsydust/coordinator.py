@@ -50,8 +50,8 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         self.data[status.address] = status
         self.async_set_updated_data(self.data)
 
-    def _on_disconnect(self, client) -> None:
-        """Called by bleak when the BLE connection drops."""
+    def _on_disconnect(self, *_args) -> None:
+        """Called when the BLE connection drops."""
         _LOGGER.warning("BLE connection lost (disconnect callback)")
         self._disconnected = True
 
