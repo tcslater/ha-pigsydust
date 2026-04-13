@@ -65,9 +65,14 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
                 raise UpdateFailed("BLE disconnected — reconnecting")
 
         # Skip poll if push data is fresh — avoid unnecessary BLE traffic.
+        # The set_utc burst during login populates data before the first
+        # coordinator poll, so this also handles the initial refresh.
         now = time.monotonic()
-        if self.data and (now - self._last_push) < _PUSH_FRESH_SECS:
-            _LOGGER.debug("Skipping poll — push data is fresh")
+        data_count = len(self.data) if self.data else 0
+        push_age = now - self._last_push if self._last_push else -1
+        _LOGGER.debug("Poll check: data=%d devices, push_age=%.1fs", data_count, push_age)
+        if self.data and self._last_push and (now - self._last_push) < _PUSH_FRESH_SECS:
+            _LOGGER.debug("Skipping poll — have %d devices from push", len(self.data))
             return self.data
 
         try:
