@@ -1,8 +1,6 @@
 <p align="center">
-  <img src="splash.png" alt="PiggsyDust" width="400">
+  <img src="splash.png" alt="PigsyDust" width="400">
 </p>
-
-# Pixie Mesh for Home Assistant
 
 Home Assistant custom integration for [SAL Pixie](https://pixieplus.com.au/) BLE mesh wall switches — fully local, no cloud.
 
@@ -23,7 +21,7 @@ Home Assistant custom integration for [SAL Pixie](https://pixieplus.com.au/) BLE
 ### HACS (recommended)
 
 1. Add this repository as a custom repository in HACS
-2. Search for "Pixie Mesh" and install
+2. Search for "PigsyDust" and install
 3. Restart Home Assistant
 
 ### Manual
@@ -43,7 +41,7 @@ The integration needs your mesh password (called "Home Key" in the Pixie app) to
 
 ## Setup
 
-The integration will auto-discover Pixie mesh devices via Bluetooth. You can also add manually via **Settings > Devices & Services > Add Integration > Pixie Mesh**.
+The integration will auto-discover Pixie mesh devices via Bluetooth. You can also add manually via **Settings > Devices & Services > Add Integration > PigsyDust**.
 
 Enter your mesh password when prompted. The integration will connect to the strongest available gateway device and discover all switches on the mesh.
 
