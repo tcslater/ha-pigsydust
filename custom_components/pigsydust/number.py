@@ -5,12 +5,13 @@ from __future__ import annotations
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, MESH_DEVICE_INFO
+from .const import DOMAIN, MESH_DEVICE_INFO, SIGNAL_NEW_DEVICE
 from .coordinator import PixieCoordinator
 
 PARALLEL_UPDATES = 1
@@ -35,6 +36,21 @@ async def async_setup_entry(
         entities.append(PixieIndicatorBrightness(coordinator, entry, address))
 
     async_add_entities(entities, update_before_add=False)
+
+    @callback
+    def _async_add_new_device(address: int) -> None:
+        async_add_entities(
+            [PixieIndicatorBrightness(coordinator, entry, address)],
+            update_before_add=False,
+        )
+
+    entry.async_on_unload(
+        async_dispatcher_connect(
+            hass,
+            SIGNAL_NEW_DEVICE.format(entry_id=entry.entry_id),
+            _async_add_new_device,
+        )
+    )
 
 
 class PixieMeshBrightness(NumberEntity):

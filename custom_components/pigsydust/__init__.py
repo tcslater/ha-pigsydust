@@ -98,9 +98,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     client = await _connect_and_login(hass, password)
 
-    coordinator = PixieCoordinator(hass, client)
+    coordinator = PixieCoordinator(hass, client, entry.entry_id)
     client.set_disconnect_callback(coordinator._on_disconnect)
     await coordinator.async_config_entry_first_refresh()
+    coordinator._known_addresses = set(coordinator.data or {})
 
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {

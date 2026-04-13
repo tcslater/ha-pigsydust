@@ -8,6 +8,7 @@ from datetime import timedelta
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from pigsydust import DeviceStatus, PixieClient
 from pigsydust.crypto import LoginError
@@ -25,7 +26,9 @@ _PUSH_FRESH_SECS = 120  # skip poll if push data arrived within this window
 class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
     """Coordinate data updates from a Pixie mesh."""
 
-    def __init__(self, hass: HomeAssistant, client: PixieClient) -> None:
+    def __init__(
+        self, hass: HomeAssistant, client: PixieClient, entry_id: str
+    ) -> None:
         super().__init__(
             hass,
             _LOGGER,
@@ -34,20 +37,37 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
             always_update=False,
         )
         self.client = client
+        self._entry_id = entry_id
         self._unsubscribe = client.on_status_update(self._on_push_update)
         self._command_timestamps: dict[int, float] = {}
         self._last_push: float = 0
         self._disconnected: bool = False
+        self._known_addresses: set[int] = set()
 
     def mark_commanded(self, address: int) -> None:
         """Mark a device as recently commanded (suppresses poll overwrite)."""
         self._command_timestamps[address] = time.monotonic()
+
+    def _check_new_devices(self, data: dict[int, DeviceStatus]) -> None:
+        """Fire a dispatcher signal for each newly discovered device."""
+        from .const import SIGNAL_NEW_DEVICE
+
+        new = set(data) - self._known_addresses
+        self._known_addresses = set(data)
+        for address in new:
+            _LOGGER.info("New device discovered: address=%d", address)
+            async_dispatcher_send(
+                self.hass,
+                SIGNAL_NEW_DEVICE.format(entry_id=self._entry_id),
+                address,
+            )
 
     def _on_push_update(self, status: DeviceStatus) -> None:
         self._last_push = time.monotonic()
         if self.data is None:
             self.data = {}
         self.data[status.address] = status
+        self._check_new_devices(self.data)
         self.async_set_updated_data(self.data)
 
     def _on_disconnect(self, *_args) -> None:
@@ -94,7 +114,9 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
                 cmd_time = self._command_timestamps.get(addr, 0)
                 if now - cmd_time > _COMMAND_GRACE_SECS:
                     merged[addr] = status
+            self._check_new_devices(merged)
             return merged
+        self._check_new_devices(result)
         return result
 
     async def _try_reconnect(self) -> None:

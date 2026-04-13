@@ -1,7 +1,7 @@
 {
   "domain": "pigsydust",
   "name": "PigsyDust",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "codeowners": ["@tcslater"],
   "config_flow": true,
   "dependencies": ["bluetooth_adapters"],
