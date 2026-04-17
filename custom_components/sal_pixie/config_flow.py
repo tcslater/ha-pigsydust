@@ -45,7 +45,7 @@ class PixieConfigFlow(ConfigFlow, domain=DOMAIN):
             error = await self._test_connection_any(user_input[CONF_MESH_PASSWORD])
             if error is None:
                 return self.async_create_entry(
-                    title="Pixie Mesh",
+                    title="SAL Pixie",
                     data={CONF_MESH_PASSWORD: user_input[CONF_MESH_PASSWORD]},
                 )
             errors["base"] = error
@@ -68,7 +68,7 @@ class PixieConfigFlow(ConfigFlow, domain=DOMAIN):
             error = await self._test_connection_any(user_input[CONF_MESH_PASSWORD])
             if error is None:
                 return self.async_create_entry(
-                    title="Pixie Mesh",
+                    title="SAL Pixie",
                     data={CONF_MESH_PASSWORD: user_input[CONF_MESH_PASSWORD]},
                 )
             errors["base"] = error

@@ -120,6 +120,21 @@ Do this first. Everything downstream (tests, docs, quality scale declaration) em
 - `custom_components/pigsydust/` is fully removed (the rename was a move, not a copy). If only `__pycache__` remains, delete the directory.
 - `grep -r "pigsydust" custom_components/sal_pixie/` returns only the library import lines, never the old domain.
 
+### Follow-up: hub-device pattern, config-entry title
+
+The initial rename left user-facing surfaces calling the integration "Pixie Mesh" (config-entry title and config-flow step titles). The mesh-wide select/number/button entities are a deliberate feature — the Pixie protocol has a broadcast address, so one packet toggles every switch at once. Rather than drop that UI, adopt the hub-device pattern used by Hue/Unifi/Fritzbox: the integration is **SAL Pixie**; the hub device inside it is **Pixie Mesh** (because that's what the mesh is called in the product docs).
+
+Changes:
+
+- `config_flow.py` — `async_create_entry(title="Pixie Mesh")` → `title="SAL Pixie"` in both user and bluetooth-confirm paths.
+- `strings.json` + `translations/en.json` — step titles `"Pixie Mesh"` / `"Pixie Mesh Discovered"` → `"SAL Pixie"` / `"SAL Pixie discovered"` (HA sentence-case convention).
+- `const.py` `MESH_DEVICE_INFO` — left unchanged; `name="Pixie Mesh"` is correct for the hub device.
+- Module docstrings referring to "Pixie Mesh" — left unchanged (not user-facing); Stage 2 will touch most of these files anyway.
+
+Acceptance:
+
+- A fresh install shows an entry titled "SAL Pixie" in Settings › Devices & Services, containing a "Pixie Mesh" hub device plus per-switch light devices.
+
 ## Stage 2 — Foundational Modernization
 
 Low-risk, no user-facing behavior change. Groundwork for strict typing and all downstream stages.
