@@ -31,6 +31,45 @@ The mesh protocol is believed to be the same across the product line. These can 
 
 ---
 
+## Cross-repository coordination
+
+Several stages require coordinated changes across two repositories:
+
+| Repo | Purpose |
+|------|---------|
+| `ha-pigsydust` | The Home Assistant integration (this repo) |
+| `pigsydust-py` | The PyPI library implementing the Telink mesh BLE protocol |
+
+### Which stages touch which repo
+
+| Stage | `ha-pigsydust` | `pigsydust-py` |
+|-------|----------------|----------------|
+| 0 | Investigation script | — |
+| 1 | Rename to `sal_pixie` | — |
+| 2 | Drop `DEVICE_TYPE_GATEWAY` usage, drop RSSI heuristic, typed runtime data | Remove `DEVICE_TYPE_GATEWAY`, rename parser access to `major_type`/`minor_type`, add `py.typed` marker, bump to 0.2.0 |
+| 3 | Service exception wrapping, translations | — |
+| 4 | Reauth + reconfigure flows | — |
+| 5 | Availability logging | — |
+| 6 | Diagnostics platform, repairs, icons | `DeviceStatus` must expose `major_type`, `minor_type`, raw manufacturer advert bytes |
+| 7 | Integration tests | Library tests (if not already adequate) |
+| 8 | Expanded README | README update for PyPI landing page |
+| 9 | `quality_scale.yaml` | — |
+| 10 | — (brands is a third repo) | — |
+| 11 | Submit to `home-assistant/core` | Ensure latest release pinned in HA core requirements |
+
+### Release ordering
+
+Whenever a stage changes both repos, the library must be released to PyPI **before** the integration's `manifest.json` pins the new version. Typical flow:
+
+1. Local Claude makes both changes simultaneously
+2. Tag and release `pigsydust-py` to PyPI (e.g. `0.2.0`)
+3. Update `ha-pigsydust/custom_components/sal_pixie/manifest.json` `requirements` to the new version
+4. Commit the integration-side changes
+
+The integration's `requirements` field in `manifest.json` is the pin.
+
+---
+
 ## Stage 0 — Reverse-engineering investigation (complete)
 
 **Status:** Complete. Findings recorded below.
@@ -60,7 +99,9 @@ The original code named a constant `DEVICE_TYPE_GATEWAY` with value `0x47`, infe
 
 ---
 
-## Stage 1 — Domain & Branding Rename
+## Stage 1 — Domain & Branding Rename (complete)
+
+**Status:** Complete in commit `cae47d2`.
 
 Do this first. Everything downstream (tests, docs, quality scale declaration) embeds the domain string.
 
