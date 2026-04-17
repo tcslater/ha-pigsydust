@@ -17,9 +17,14 @@ from homeassistant.components.bluetooth import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
+from homeassistant.exceptions import (
+    ConfigEntryAuthFailed,
+    ConfigEntryNotReady,
+    HomeAssistantError,
+)
 from homeassistant.helpers.typing import ConfigType
 from pigsydust import PixieClient, parse_pixie_advert
+from pigsydust.crypto import LoginError
 
 from .const import CONF_MESH_PASSWORD, DOMAIN, MESH_NAME
 
@@ -147,6 +152,12 @@ async def _connect_and_login(
 
     try:
         await pixie.login(MESH_NAME, password)
+    except LoginError as err:
+        # Wrong home key — surface as an auth failure so HA triggers the
+        # reauth flow instead of retrying forever with the bad credential.
+        if bleak_client.is_connected:
+            await bleak_client.disconnect()
+        raise ConfigEntryAuthFailed("Invalid home key") from err
     except Exception as err:
         if bleak_client.is_connected:
             await bleak_client.disconnect()

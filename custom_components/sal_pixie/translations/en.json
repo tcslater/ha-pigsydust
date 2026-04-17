@@ -21,6 +21,26 @@
         "data_description": {
           "home_key": "Found in the Pixie app under Home Management \u2192 Share Home (shown as \"KEY\")"
         }
+      },
+      "reauth_confirm": {
+        "title": "Reauthenticate SAL Pixie",
+        "description": "The stored home key is no longer working. Enter the current home key.",
+        "data": {
+          "home_key": "Home key"
+        },
+        "data_description": {
+          "home_key": "Found in the Pixie app under Home Management \u2192 Share Home (shown as \"KEY\")"
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigure SAL Pixie",
+        "description": "Enter the new home key for the mesh.",
+        "data": {
+          "home_key": "Home key"
+        },
+        "data_description": {
+          "home_key": "Found in the Pixie app under Home Management \u2192 Share Home (shown as \"KEY\")"
+        }
       }
     },
     "error": {
@@ -28,7 +48,9 @@
       "invalid_auth": "Invalid home key"
     },
     "abort": {
-      "already_configured": "Already configured"
+      "already_configured": "Already configured",
+      "reauth_successful": "Reauthentication successful",
+      "reconfigure_successful": "Reconfiguration successful"
     }
   },
   "services": {
