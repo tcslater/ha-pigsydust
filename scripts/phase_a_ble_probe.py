@@ -31,7 +31,7 @@ from bleak_retry_connector import (
     BleakClientWithServiceCache,
     establish_connection,
 )
-from pigsydust import PixieClient
+from pigsydust import PixieClient, parse_pixie_advert
 from pigsydust.const import MANUFACTURER_ID
 
 logging.basicConfig(
@@ -70,29 +70,6 @@ class ComboResult:
     @property
     def full_pass(self) -> bool:
         return self.first_pass and self.reconnect and self.reconnect_login and self.reconnect_query
-
-
-def _extract_mac_from_manufacturer_data(mfr_data: dict[int, bytes]) -> bytes | None:
-    data = mfr_data.get(MANUFACTURER_ID)
-    if data is None or len(data) < 6:
-        return None
-    mac = bytearray(6)
-    mac[5] = data[2]
-    mac[4] = data[3]
-    mac[3] = data[4]
-    mac[2] = data[5]
-    return bytes(mac)
-
-
-def _mac_from_linux_address(address: str) -> bytes | None:
-    """On Linux, the BLE address string IS the MAC."""
-    try:
-        parts = address.split(":")
-        if len(parts) == 6:
-            return bytes(int(p, 16) for p in parts)
-    except ValueError:
-        return None
-    return None
 
 
 async def _find_pixie() -> tuple[BLEDevice, dict[int, bytes]]:
@@ -164,12 +141,9 @@ async def _run_workflow(
     pixie.set_ble_client(bleak_client)
 
     # Seed the gateway MAC; login reads DIS later and may overwrite.
-    if platform.system() == "Linux":
-        mac = _mac_from_linux_address(device.address)
-    else:
-        mac = _extract_mac_from_manufacturer_data(mfr_data)
-    if mac:
-        pixie._gw_mac = mac
+    advert = parse_pixie_advert(mfr_data)
+    if advert is not None:
+        pixie._gw_mac = advert.mac
 
     await pixie.login(MESH_NAME, password)
     if is_reconnect:
