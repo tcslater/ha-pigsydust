@@ -9,12 +9,13 @@ from typing import TYPE_CHECKING, Any
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from pigsydust import DeviceStatus, PixieClient
 from pigsydust.crypto import LoginError
 
-from .const import CONF_MESH_PASSWORD, SIGNAL_NEW_DEVICE
+from .const import CONF_MESH_PASSWORD, DOMAIN, SIGNAL_NEW_DEVICE
 
 if TYPE_CHECKING:
     from . import SalPixieConfigEntry
@@ -27,6 +28,11 @@ SCAN_INTERVAL = timedelta(minutes=5)
 
 _COMMAND_GRACE_SECS = 5
 _PUSH_FRESH_SECS = 120  # skip poll if push data arrived within this window
+
+# Consecutive failed updates before we raise a user-visible repair issue.
+# At SCAN_INTERVAL=5min this is ~25 minutes of sustained outage.
+_UNREACHABLE_THRESHOLD = 5
+_UNREACHABLE_ISSUE_ID = "mesh_unreachable"
 
 
 class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
@@ -54,10 +60,34 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         self._last_push: float = 0
         self._disconnected: bool = False
         self._known_addresses: set[int] = set()
+        self._consecutive_failures: int = 0
+        self._issue_raised: bool = False
 
     def mark_commanded(self, address: int) -> None:
         """Mark a device as recently commanded (suppresses poll overwrite)."""
         self._command_timestamps[address] = time.monotonic()
+
+    def _note_failure(self) -> None:
+        """Track a failed update; raise a repair issue once the threshold is hit."""
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= _UNREACHABLE_THRESHOLD and not self._issue_raised:
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                _UNREACHABLE_ISSUE_ID,
+                is_fixable=True,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key=_UNREACHABLE_ISSUE_ID,
+                data={"entry_id": self.config_entry.entry_id},
+            )
+            self._issue_raised = True
+
+    def _note_success(self) -> None:
+        """Clear the failure counter and resolve the repair issue if one is up."""
+        self._consecutive_failures = 0
+        if self._issue_raised:
+            ir.async_delete_issue(self.hass, DOMAIN, _UNREACHABLE_ISSUE_ID)
+            self._issue_raised = False
 
     def _check_new_devices(self, data: dict[int, DeviceStatus]) -> None:
         """Fire a dispatcher signal for each newly discovered device.
@@ -110,6 +140,7 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
             if not self.client.is_connected:
                 if self.last_update_success:
                     _LOGGER.warning("SAL Pixie mesh connection lost")
+                self._note_failure()
                 raise UpdateFailed("BLE disconnected — reconnecting")
 
         # Skip poll if push data is fresh — avoid unnecessary BLE traffic.
@@ -134,14 +165,18 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
             if self.last_update_success:
                 _LOGGER.warning("SAL Pixie mesh connection lost: %s", err)
             await self._try_reconnect()
+            self._note_failure()
             raise UpdateFailed(f"BLE connection lost: {err}") from err
         except Exception as err:
+            self._note_failure()
             raise UpdateFailed(f"Error querying status: {err}") from err
 
         # If we're here, the poll succeeded — log the recovery transition
-        # (only on the edge from unhealthy to healthy).
+        # (only on the edge from unhealthy to healthy) and clear any
+        # mesh-unreachable repair issue.
         if not self.last_update_success:
             _LOGGER.info("SAL Pixie mesh connection restored")
+        self._note_success()
 
         # Merge with existing data. Skip poll results for recently
         # commanded devices (grace period prevents stale overwrite).

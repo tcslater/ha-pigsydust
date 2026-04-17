@@ -84,5 +84,18 @@
     "command_failed": {
       "message": "Command failed: {error}"
     }
+  },
+  "issues": {
+    "mesh_unreachable": {
+      "title": "SAL Pixie mesh unreachable",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "SAL Pixie mesh unreachable",
+            "description": "Home Assistant hasn't been able to reach the SAL Pixie mesh for several update cycles. Check that the Bluetooth adapter is working and at least one Pixie switch is within range, then submit to retry."
+          }
+        }
+      }
+    }
   }
 }
