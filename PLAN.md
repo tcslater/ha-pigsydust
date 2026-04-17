@@ -1044,40 +1044,169 @@ jobs:
 
 ## Stage 8 — Documentation
 
-README gets expanded into:
-- Supported devices (explicit list)
-- Prerequisites
-- Installation
-- Configuration parameters (home key, where to find it)
-- Data updates (push + fallback poll)
-- Known limitations
-- Troubleshooting
-- Removing the integration
-- Use cases
-- Unofficial / unaffiliated disclaimer
+The custom-component README already covers installation. For core inclusion, the content needs restructuring into the sections HA core docs expect. These will be ported into markdown under `home-assistant.io/source/_integrations/sal_pixie.markdown` when Stage 11 lands — but drafting them in the README now means less rewriting later and satisfies the Gold `docs-*` rules in the quality scale.
+
+### Target section structure
+
+Required sections, in order:
+
+1. **Short description** (top paragraph, single sentence)
+2. **Supported devices** — explicit list of models confirmed working. Currently just "SAL Pixie wall switches". Include a clear "not yet supported" subsection naming RGB strips, dimmers, power points.
+3. **Prerequisites** — BLE adapter, HA Bluetooth integration enabled, the mesh already configured via the vendor's PIXIE app (the integration doesn't do initial device pairing — it joins an existing mesh)
+4. **Installation** — HACS + manual steps
+5. **Configuration** — where to find the home key in the Pixie app (Home Management → Share Home → KEY)
+6. **Data updates** — short paragraph explaining the push-primary, poll-fallback model
+7. **Supported functionality** — the entities and services provided
+8. **Known limitations** — no OTA updates, no device pairing, `majorType` semantics not fully understood, single-config-entry (one mesh per HA)
+9. **Troubleshooting** — common issues: BLE adapter permissions in Docker, invalid home key, entities unavailable
+10. **Removing the integration** — standard HA flow, no special cleanup
+11. **Unofficial / unaffiliated disclaimer** — keep at top where it already is
+
+### Acceptance criteria
+
+- Every section listed above exists in the README
+- The "Supported devices" section matches the device-type routing in code (no lies)
+- A fresh user can follow the README end-to-end without needing to read source code
 
 ## Stage 9 — Quality Scale Declaration
 
-- `quality_scale.yaml` in the integration directory
-- Declare target tier with per-rule status (`done`, `todo`, `exempt` with justification)
-- Initial target: Silver
+**File:** `custom_components/sal_pixie/quality_scale.yaml`
+
+Declares per-rule status against the Integration Quality Scale. Target tier at submission: **Silver** (with most Gold rules already satisfied to ease the follow-up promotion).
+
+### Structure
+
+```yaml
+rules:
+  # Bronze
+  action-setup: done
+  appropriate-polling: done
+  brands:
+    status: todo
+    comment: Pending submission to home-assistant/brands (Stage 10)
+  common-modules: done
+  config-flow: done
+  config-flow-test-coverage: done
+  dependency-transparency: done
+  docs-actions: done
+  docs-high-level-description: done
+  docs-installation: done
+  docs-installation-parameters: done
+  entity-event-setup: done
+  entity-unique-id: done
+  has-entity-name: done
+  runtime-data: done
+  test-before-configure: done
+  unique-config-entry: done
+
+  # Silver
+  action-exceptions: done
+  config-entry-unloading: done
+  docs-configuration-parameters: done
+  docs-installation-parameters: done
+  entity-unavailable: done
+  integration-owner: done
+  log-when-unavailable: done
+  parallel-updates: done
+  reauthentication-flow: done
+  test-coverage: done
+
+  # Gold
+  devices: done
+  diagnostics: done
+  discovery: done
+  discovery-update-info: done
+  docs-data-update: done
+  docs-examples: done
+  docs-known-limitations: done
+  docs-supported-devices: done
+  docs-supported-functions: done
+  docs-troubleshooting: done
+  docs-use-cases: done
+  dynamic-devices: done
+  entity-category: done
+  entity-device-class:
+    status: exempt
+    comment: Lights and buttons don't have applicable device classes; sensors use appropriate classes.
+  entity-disabled-by-default:
+    status: exempt
+    comment: All exposed entities are useful by default.
+  entity-translations: done
+  exception-translations: todo
+  icon-translations: done
+  reconfiguration-flow: done
+  repair-issues: done
+  stale-devices: done
+
+  # Platinum
+  async-dependency: done
+  inject-websession:
+    status: exempt
+    comment: Integration uses local BLE, not HTTP.
+  strict-typing: todo
+```
+
+### Acceptance criteria
+
+- Every rule in the Bronze + Silver sets has status `done`
+- Any `exempt` rule has a plain-English justification
+- File is valid YAML (`python -c 'import yaml; yaml.safe_load(open("quality_scale.yaml"))'`)
 
 ## Stage 10 — Brands Repo Submission
 
-Separate PR to `home-assistant/brands`:
-- `core_integrations/sal_pixie/icon.png` (256×256)
-- `core_integrations/sal_pixie/logo.png`
-- Dark mode variants if needed
+A separate PR to `home-assistant/brands`. Must merge **before** the core integration PR.
 
-**Must be merged before the core PR.**
+### Assets needed
+
+- `core_integrations/sal_pixie/icon.png` — 256×256, square, transparent background
+- `core_integrations/sal_pixie/icon@2x.png` — 512×512 retina variant
+- `core_integrations/sal_pixie/logo.png` — wide format, transparent background
+- `core_integrations/sal_pixie/logo@2x.png` — retina variant
+- Dark-mode variants under `core_integrations/sal_pixie/dark/` if the light-mode assets don't render well on dark backgrounds
+
+Use SAL's official Pixie product branding. The brands repo README specifies exact pixel dimensions and transparency requirements.
+
+### PR content
+
+- Title: `Add SAL Pixie brand`
+- Description: brief note that this is for a new community integration targeting HA core, linking to the integration PR (to be filed after this one merges)
+
+### Acceptance criteria
+
+- PR merged into `home-assistant/brands`
+- Assets visible at `https://brands.home-assistant.io/sal_pixie/icon.png` etc.
 
 ## Stage 11 — Core PR Preparation
 
-Separate fork of `home-assistant/core`:
-- Move integration into `homeassistant/components/sal_pixie/`
-- Move tests into `tests/components/sal_pixie/`
-- Run the codegen scripts to register bluetooth discovery and requirements
-- Submit PR referencing `quality_scale.yaml`
+Final stage. Work happens in a fork of `home-assistant/core`, not in this repo.
+
+### Mechanical steps
+
+1. **Fork + clone** `home-assistant/core`; create branch `sal_pixie-integration`.
+2. **Copy integration** from `custom_components/sal_pixie/` to `homeassistant/components/sal_pixie/`.
+3. **Copy tests** from `tests/` to `tests/components/sal_pixie/`.
+4. **Adjust imports** in test files: `custom_components.sal_pixie` → `homeassistant.components.sal_pixie`.
+5. **Update manifest `version`** field — HA core integrations do not include a `version` in `manifest.json` (only custom components do). Remove the field.
+6. **Add to `homeassistant/generated/bluetooth.py`** — run `python -m script.hassfest` to regenerate from the manifest's `bluetooth` entries.
+7. **Add dependency** to `requirements_all.txt` and `requirements_test_all.txt` — both files are auto-generated by `python -m script.gen_requirements_all`.
+8. **Strict typing** — add `homeassistant.components.sal_pixie.*` to `.strict-typing` if Platinum tier is targeted.
+9. **Run hassfest** — `python -m script.hassfest` validates manifest, config flow, translations, etc.
+10. **Run tests** — `pytest tests/components/sal_pixie/ --cov=homeassistant.components.sal_pixie`.
+
+### PR content
+
+- Title: `Add SAL Pixie integration`
+- Description checklist per HA's PR template
+- Link to the merged brands PR
+- Link to the `pigsydust` PyPI release
+- Declare target quality scale tier
+
+### Acceptance criteria
+
+- `python -m script.hassfest` passes with zero errors
+- All tests pass, coverage ≥ 95%
+- `mypy --strict homeassistant/components/sal_pixie/` passes (if Platinum pursued)
+- PR accepted by at least one HA core maintainer review
 
 ---
 
