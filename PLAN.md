@@ -31,18 +31,32 @@ The mesh protocol is believed to be the same across the product line. These can 
 
 ---
 
-## Stage 0 — Reverse-engineering investigation (user task)
+## Stage 0 — Reverse-engineering investigation (complete)
 
-**Status:** Not blocking architecture; diagnostic only.
+**Status:** Complete. Findings recorded below.
 
-One unknown in the current code: byte[14] of the manufacturer data advertisement. Currently assumed to indicate "gateway role" with value `0x47` preferred over `0x45`. The vendor's own app makes no distinction between device types, so whatever this byte means, it shouldn't surface in the UI. The open question is purely whether it's:
+The original code named a constant `DEVICE_TYPE_GATEWAY` with value `0x47`, inferred to mean "gateway role" because observed devices with that byte value appeared to be better connection targets. The ASCII coincidence (`0x47` = 'G', `0x45` = 'E') made "gateway / endpoint" a plausible reading.
 
-- **Stable per device** → hardware/firmware identifier; connection preference is coincidental or reflects a capability flag
-- **Changing over time** → mesh-state indicator (active advertiser, wake state, relay role)
+### Findings from app disassembly
 
-Either outcome leads to the same user-facing behavior and the same architectural choices. This investigation just informs how honestly we can name the constant and what comment to leave for future maintainers.
+- The Pixie app's own parser names the field `majorType` (with a companion `minorType`)
+- **No** constants `0x47` / `0x45` are compared anywhere in the app binary
+- The string "gateway" does not appear anywhere in the app binary
+- The "gateway" label was entirely our inference — not from the app
 
-**Action:** Run `scripts/investigate_byte14.py` for ~5 minutes. It scans BLE advertisements and reports whether byte[14] is stable per device across the observation window.
+### Findings from live BLE observation
+
+- Observed 8 wall switches over 5 minutes with HA and Pixie app both active
+- All 8 devices advertised `majorType = 0x45` throughout
+- No device advertised `0x47` during the observation window
+- The `0x47` value was observed on a wall switch during an earlier reverse-engineering session, but its meaning remains unknown
+
+### Conclusions
+
+- Treat byte[14] as an opaque `majorType` value with no known semantics
+- Drop the invented "gateway" terminology everywhere
+- Drop the `0x47` connection-preference heuristic — no empirical or documentary basis
+- Expose `majorType` / `minorType` in `diagnostics.py` (Stage 6) so future contributors with different hardware can report what they see
 
 ---
 
@@ -68,9 +82,9 @@ Low-risk, no behavior change. Groundwork for strict typing.
 - `FlowResult` → `ConfigFlowResult`
 - `callable` → `Callable` from `collections.abc`
 - `from __future__ import annotations` everywhere
-- Rename `DEVICE_TYPE_GATEWAY` to a neutral name (e.g. `_DEVICE_FLAG_0X47`) in both the integration and the `pigsydust` library; add a comment documenting that the semantics are empirical
+- Remove `DEVICE_TYPE_GATEWAY` from the `pigsydust` library entirely; replace the parser field naming with `major_type` / `minor_type` to match the app's own terminology
 - Drop all "Gateway" branding from device names — every entity becomes `Pixie Switch {address}`
-- Keep the byte[14] connection-preference heuristic in `_find_best_pixie_device` (it works empirically, even if the meaning is unknown)
+- Drop the `0x47` connection-preference heuristic in `_find_best_pixie_device`; select purely by RSSI
 - Audit `PARALLEL_UPDATES`: `1` on write platforms (light, select, number, button), `0` on sensor
 - Pass `mypy --strict`
 
@@ -172,5 +186,5 @@ Stages 1 + 2 + 3 + 4 + 7a-7c. That produces a rebranded, modernized, tested inte
 
 ## Known open questions
 
-- **Byte[14] semantics** — pending Stage 0 investigation
-- **Slave switches** — PIXIE app treats all switches identically, so HA should too. No architectural branching needed. The term "slave" does not appear in any user-facing surface.
+- **`majorType` semantics** — settled as unknown, treated as opaque. `0x45` is the common value observed on wall switches; `0x47` was observed once with unknown meaning. Exposed via diagnostics for future investigation.
+- **Slave switches** — PIXIE app treats all switches identically, so HA does too. No architectural branching needed. The term "slave" does not appear in any user-facing surface.

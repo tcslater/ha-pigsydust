@@ -1,6 +1,6 @@
 {
-  "domain": "pigsydust",
-  "name": "PigsyDust",
+  "domain": "sal_pixie",
+  "name": "SAL Pixie",
   "version": "0.1.1",
   "codeowners": ["@tcslater"],
   "config_flow": true,

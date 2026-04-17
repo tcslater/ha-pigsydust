@@ -1,8 +1,8 @@
-"""Constants for the Pixie Mesh integration."""
+"""Constants for the SAL Pixie integration."""
 
 from homeassistant.helpers.device_registry import DeviceInfo
 
-DOMAIN = "pigsydust"
+DOMAIN = "sal_pixie"
 
 MESH_NAME = "Smart Light"  # Fixed — firmware default, not user-configurable.
 
