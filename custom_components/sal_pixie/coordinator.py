@@ -60,9 +60,19 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         self._command_timestamps[address] = time.monotonic()
 
     def _check_new_devices(self, data: dict[int, DeviceStatus]) -> None:
-        """Fire a dispatcher signal for each newly discovered device."""
+        """Fire a dispatcher signal for each newly discovered device.
+
+        Accumulate into ``_known_addresses`` rather than replacing it —
+        any single poll or push may only carry a subset of the mesh,
+        so wholesale-replace would drop and then re-add every device
+        that happened to be absent from the current data, firing a
+        spurious "new device" event on every such round trip.
+        Stale-device pruning is a separate concern (Stage 6c).
+        """
         new = set(data) - self._known_addresses
-        self._known_addresses = set(data)
+        if not new:
+            return
+        self._known_addresses.update(new)
         for address in new:
             _LOGGER.info("New device discovered: address=%d", address)
             async_dispatcher_send(
