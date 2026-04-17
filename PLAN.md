@@ -116,18 +116,179 @@ Do this first. Everything downstream (tests, docs, quality scale declaration) em
 
 ## Stage 2 — Foundational Modernization
 
-Low-risk, no behavior change. Groundwork for strict typing.
+Low-risk, no user-facing behavior change. Groundwork for strict typing and all downstream stages.
 
-- Typed `SalPixieConfigEntry = ConfigEntry[SalPixieRuntimeData]` alias
-- `SalPixieRuntimeData` dataclass replaces the `hass.data[DOMAIN][entry.entry_id]` dict
-- `FlowResult` → `ConfigFlowResult`
-- `callable` → `Callable` from `collections.abc`
-- `from __future__ import annotations` everywhere
-- Remove `DEVICE_TYPE_GATEWAY` from the `pigsydust` library entirely; replace the parser field naming with `major_type` / `minor_type` to match the app's own terminology
-- Drop all "Gateway" branding from device names — every entity becomes `Pixie Switch {address}`
-- Drop the `0x47` connection-preference heuristic in `_find_best_pixie_device`; select purely by RSSI
-- Audit `PARALLEL_UPDATES`: `1` on write platforms (light, select, number, button), `0` on sensor
-- Pass `mypy --strict`
+### Integration-side changes
+
+**1. Typed runtime data** (`__init__.py`):
+
+```python
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+from homeassistant.config_entries import ConfigEntry
+
+if TYPE_CHECKING:
+    from pigsydust import PixieClient
+    from .coordinator import SalPixieCoordinator
+
+@dataclass
+class SalPixieRuntimeData:
+    client: "PixieClient"
+    coordinator: "SalPixieCoordinator"
+    password: str
+    indicator_modes: dict[int, str] = field(default_factory=dict)
+
+type SalPixieConfigEntry = ConfigEntry[SalPixieRuntimeData]
+```
+
+**2. Updated `async_setup_entry` signature**:
+
+```python
+async def async_setup_entry(hass: HomeAssistant, entry: SalPixieConfigEntry) -> bool:
+    password = entry.data[CONF_MESH_PASSWORD]
+    client = await _connect_and_login(hass, password)
+
+    coordinator = SalPixieCoordinator(hass, entry, client)
+    client.set_disconnect_callback(coordinator._on_disconnect)
+    await coordinator.async_config_entry_first_refresh()
+
+    entry.runtime_data = SalPixieRuntimeData(
+        client=client,
+        coordinator=coordinator,
+        password=password,
+    )
+
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    return True
+```
+
+**3. `async_unload_entry` simplification** — no more `hass.data` dict to clean up:
+
+```python
+async def async_unload_entry(hass: HomeAssistant, entry: SalPixieConfigEntry) -> bool:
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unload_ok:
+        await entry.runtime_data.coordinator.async_shutdown()
+        await entry.runtime_data.client.disconnect()
+    return unload_ok
+```
+
+**4. Coordinator gets `config_entry` kwarg** (modern HA pattern, 2024.x+):
+
+```python
+class SalPixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
+    config_entry: SalPixieConfigEntry  # typed parent attribute
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: SalPixieConfigEntry,
+        client: PixieClient,
+    ) -> None:
+        super().__init__(
+            hass,
+            _LOGGER,
+            name="SAL Pixie",
+            update_interval=SCAN_INTERVAL,
+            config_entry=entry,
+            always_update=False,
+        )
+        self.client = client
+        ...
+```
+
+This removes the current hacky `_try_reconnect` lookup through `hass.data[DOMAIN]`. The coordinator reads `self.config_entry.data[CONF_MESH_PASSWORD]` directly.
+
+**5. Platform setup functions** — each platform reads runtime data from the entry:
+
+```python
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: SalPixieConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    runtime = entry.runtime_data
+    coordinator = runtime.coordinator
+    ...
+```
+
+**6. Drop invented gateway taxonomy** in `light.py`:
+
+- Remove `from pigsydust.const import DEVICE_TYPE_GATEWAY`
+- Remove the `is_gateway = status.device_type == DEVICE_TYPE_GATEWAY` logic
+- Device name becomes unconditionally `f"Pixie Switch {address}"`
+
+**7. Drop `0x47` preference** in `__init__.py:_find_best_pixie_device`:
+
+```python
+def _find_best_pixie_device(hass: HomeAssistant) -> str | None:
+    """Find the highest-RSSI Pixie device visible to HA's bluetooth stack."""
+    best_address: str | None = None
+    best_rssi = -999
+
+    for info in async_discovered_service_info(hass, connectable=True):
+        if 0x0211 not in (info.manufacturer_data or {}):
+            continue
+        if info.rssi > best_rssi:
+            best_rssi = info.rssi
+            best_address = info.address
+
+    return best_address
+```
+
+The `is_gateway` parameter and logging are removed. The function's docstring stops claiming to prefer gateway devices.
+
+**8. Type annotation modernization**:
+
+- `FlowResult` → `ConfigFlowResult` (import from `homeassistant.config_entries`)
+- `callable` (lowercase) → `Callable` from `collections.abc` (in `_connect_and_login` signature)
+- `from __future__ import annotations` at the top of every module that lacks it
+- Replace `Any` with concrete types wherever possible
+- Set `PARALLEL_UPDATES = 1` in `select.py`, `number.py`, `button.py` (writing platforms)
+- Set `PARALLEL_UPDATES = 0` in `sensor.py` (read-only, coordinator-driven)
+
+**9. Pass `mypy --strict`** on the integration:
+
+```bash
+mypy --strict custom_components/sal_pixie/
+```
+
+Add any necessary `# type: ignore[...]` comments with specific error codes, not blanket ignores. The `pigsydust` library needs a `py.typed` marker for this to work cleanly.
+
+### Library-side changes (`pigsydust-py`)
+
+**1. Remove `DEVICE_TYPE_GATEWAY` from `pigsydust/const.py`** — no code references it in the library, it was only imported by the integration.
+
+**2. Rename the advertisement-parser field access.** Wherever the library currently refers to byte[14] as `device_type` or similar, rename to `major_type` to match the Pixie app's own parser naming. Also expose `minor_type` if the adjacent byte is parsed. The naming matches what `bt_struct` disassembly revealed.
+
+**3. Expose raw manufacturer advert bytes on `DeviceStatus`** (needed for Stage 6 diagnostics):
+
+```python
+@dataclass
+class DeviceStatus:
+    address: int
+    is_on: bool
+    mac: str | None
+    major_type: int  # byte[14] of manufacturer advert
+    minor_type: int | None  # byte[15] if present
+    raw_manufacturer_data: bytes | None  # entire blob
+```
+
+**4. Add `py.typed` marker file** to the package so downstream users benefit from the library's type hints.
+
+**5. Bump version to `0.2.0`** — breaking change due to removed constant.
+
+**6. Release to PyPI** before updating the integration's `manifest.json` requirement.
+
+### Acceptance criteria
+
+- `mypy --strict custom_components/sal_pixie/` passes with zero errors
+- `grep -r "DEVICE_TYPE_GATEWAY\|is_gateway\|Gateway" custom_components/sal_pixie/` returns no results (except perhaps comments about the history)
+- `hass.data[DOMAIN]` is not set or read by any integration code
+- Integration loads, all entities appear, light toggles work end-to-end in a live HA instance
+- Integration unloads and reloads cleanly without resource leaks (check `hass.data` is empty afterwards)
+- `manifest.json` requires `pigsydust==0.2.0` (once released)
 
 ## Stage 3 — Service Action Hardening
 
