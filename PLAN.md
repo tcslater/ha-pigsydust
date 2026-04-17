@@ -528,9 +528,243 @@ Mirror to `translations/en.json`.
 
 ## Stage 5 — Observability
 
-- Per-entity availability logging that transitions cleanly (`WARNING` once on unavailable, `INFO` once on recovery)
-- Every entity's `available` property checks both `coordinator.last_update_success` and device presence
-- Disconnect callback triggers `coordinator.async_set_updated_data(None)` so entities go unavailable immediately
+The `log-when-unavailable` Silver rule requires a single log line when the integration transitions to unavailable, and another when it recovers. Done naively inside entity `available` properties, this would fire thousands of times per minute — the property is polled constantly. Keep the logging in the coordinator, where transitions are naturally observable via `last_update_success`.
+
+### Coordinator-level transition logging
+
+```python
+async def _async_update_data(self) -> dict[int, DeviceStatus]:
+    try:
+        result = await self.client.query_status()
+    except LoginError as err:
+        raise ConfigEntryAuthFailed from err
+    except ConnectionError as err:
+        if self.last_update_success:
+            _LOGGER.warning("Connection to SAL Pixie mesh lost: %s", err)
+        await self._try_reconnect()
+        raise UpdateFailed(f"BLE connection lost: {err}") from err
+    except Exception as err:
+        raise UpdateFailed(f"Error querying status: {err}") from err
+
+    if not self.last_update_success:
+        _LOGGER.info("Connection to SAL Pixie mesh restored")
+
+    # ... existing merge logic
+    return merged
+```
+
+`self.last_update_success` is `True` before the current call's outcome is recorded, so testing it inside the except block tells you "were we previously successful?" — i.e. this is the transition.
+
+### Disconnect-callback reaction
+
+When the BLE disconnect callback fires, immediately mark entities unavailable by pushing `None` into the coordinator:
+
+```python
+def _on_disconnect(self, *_args: Any) -> None:
+    _LOGGER.warning("SAL Pixie BLE connection dropped")
+    self._disconnected = True
+    # Push empty data so CoordinatorEntity.available returns False right away
+    self.async_set_updated_data({})
+```
+
+An empty dict marks every address absent → every entity's `available` returns `False` without waiting for the next poll to fail. Restore happens naturally when push updates or the next poll succeed.
+
+### Entity `available` property — minimal, no logging
+
+```python
+@property
+def available(self) -> bool:
+    return (
+        super().available
+        and self.coordinator.data is not None
+        and self._address in self.coordinator.data
+    )
+```
+
+No log calls here. The coordinator handles transitions.
+
+### Acceptance criteria
+
+- Pulling the BLE adapter logs **one** `WARNING` line about the connection loss (not one per entity)
+- Restoring the adapter logs **one** `INFO` line about recovery
+- All entities go unavailable within one coordinator cycle of the disconnect
+- Repeated connection/disconnection cycles don't flood logs
+
+---
+
+## Stage 6 — Gold-Tier Platforms
+
+Each item below can be its own commit.
+
+### 6a. Diagnostics platform
+
+**File:** `custom_components/sal_pixie/diagnostics.py`
+
+```python
+"""Diagnostics for SAL Pixie."""
+from __future__ import annotations
+
+from typing import Any
+
+from homeassistant.components.diagnostics import async_redact_data
+from homeassistant.core import HomeAssistant
+
+from .const import CONF_MESH_PASSWORD
+from . import SalPixieConfigEntry
+
+TO_REDACT = {CONF_MESH_PASSWORD}
+
+
+async def async_get_config_entry_diagnostics(
+    hass: HomeAssistant,
+    entry: SalPixieConfigEntry,
+) -> dict[str, Any]:
+    """Return diagnostics for a config entry."""
+    client = entry.runtime_data.client
+    coordinator = entry.runtime_data.coordinator
+
+    return {
+        "entry": async_redact_data(entry.as_dict(), TO_REDACT),
+        "connection": {
+            "address": client.address,
+            "firmware_version": client.firmware_version,
+            "hardware_version": client.hardware_version,
+            "is_connected": client.is_connected,
+        },
+        "coordinator": {
+            "last_update_success": coordinator.last_update_success,
+            "update_interval_s": coordinator.update_interval.total_seconds(),
+            "device_count": len(coordinator.data or {}),
+        },
+        "devices": {
+            str(addr): {
+                "address": addr,
+                "is_on": status.is_on,
+                "mac": status.mac,
+                "major_type": getattr(status, "major_type", None),
+                "minor_type": getattr(status, "minor_type", None),
+                "raw_manufacturer_data": (
+                    status.raw_manufacturer_data.hex()
+                    if getattr(status, "raw_manufacturer_data", None)
+                    else None
+                ),
+            }
+            for addr, status in (coordinator.data or {}).items()
+        },
+    }
+```
+
+**Library dependency:** `DeviceStatus` must expose `major_type`, `minor_type`, and `raw_manufacturer_data`. If the library can't easily provide raw bytes, fall back to just `major_type` / `minor_type` and a note in the diagnostic about needing a library version bump.
+
+### 6b. Repairs platform
+
+**File:** `custom_components/sal_pixie/repairs.py`
+
+Surface long-lived disconnection as an actionable repair issue:
+
+```python
+"""Repairs flow for SAL Pixie."""
+from __future__ import annotations
+
+from homeassistant.components.repairs import RepairsFlow
+from homeassistant.core import HomeAssistant
+from homeassistant.data_entry_flow import FlowResult
+
+from .const import DOMAIN
+
+
+class MeshUnreachableRepairFlow(RepairsFlow):
+    """Walk the user through recovering from a sustained mesh outage."""
+
+    async def async_step_init(self, user_input: dict[str, str] | None = None) -> FlowResult:
+        return await self.async_step_confirm()
+
+    async def async_step_confirm(self, user_input: dict[str, str] | None = None) -> FlowResult:
+        if user_input is not None:
+            return self.async_create_entry(data={})
+        return self.async_show_form(step_id="confirm")
+
+
+async def async_create_fix_flow(hass, issue_id, data):
+    if issue_id == "mesh_unreachable":
+        return MeshUnreachableRepairFlow()
+    return None
+```
+
+Raise the issue from the coordinator when disconnection persists past a threshold (e.g. 5 consecutive failed updates):
+
+```python
+async_create_issue(
+    hass,
+    DOMAIN,
+    "mesh_unreachable",
+    is_fixable=True,
+    severity=IssueSeverity.WARNING,
+    translation_key="mesh_unreachable",
+)
+```
+
+And `async_delete_issue(...)` when the connection recovers.
+
+### 6c. Stale-device cleanup
+
+Track `last_seen` per device in the coordinator. On each successful poll, remove device registry entries for addresses absent longer than a threshold (e.g. 24 hours):
+
+```python
+STALE_THRESHOLD = timedelta(hours=24)
+
+class SalPixieCoordinator(...):
+    def __init__(self, ...):
+        ...
+        self._last_seen: dict[int, float] = {}
+
+    async def _async_update_data(self) -> ...:
+        ...
+        now = time.monotonic()
+        for addr in merged:
+            self._last_seen[addr] = now
+
+        # Prune stale entries from device registry
+        registry = dr.async_get(self.hass)
+        threshold = now - STALE_THRESHOLD.total_seconds()
+        for addr, last_seen in list(self._last_seen.items()):
+            if last_seen < threshold and addr not in merged:
+                identifier = (DOMAIN, f"{self.config_entry.entry_id}_{addr}")
+                device = registry.async_get_device(identifiers={identifier})
+                if device:
+                    registry.async_remove_device(device.id)
+                del self._last_seen[addr]
+
+        return merged
+```
+
+### 6d. Icon translations
+
+**File:** `custom_components/sal_pixie/icons.json`
+
+```json
+{
+  "services": {
+    "set_indicator": "mdi:led-on",
+    "all_on": "mdi:lightbulb-group",
+    "all_off": "mdi:lightbulb-group-off"
+  }
+}
+```
+
+Per-entity icons are set via `_attr_icon` in the entity classes where needed (most use defaults from their device class).
+
+### 6e. Connected-device sensor rename
+
+Rename the existing `PixieGatewaySensor` to `PixieConnectedDeviceSensor` and update its state description from "current gateway" to "currently-connected device" — an honest description of what it reports. No architectural change.
+
+### Acceptance criteria (per sub-stage)
+
+- **6a**: Downloading diagnostics from the integration page produces valid JSON with the mesh password redacted
+- **6b**: Killing BLE for >5 coordinator cycles raises a visible repair issue; recovering clears it
+- **6c**: A switch removed from the mesh disappears from the device registry after 24h
+- **6d**: Services show their icons in the Developer Tools picker
+- **6e**: No code or UI string references "gateway" as a role — the word survives only in product/SKU comments if at all
 
 ## Stage 6 — Gold-Tier Platforms
 
