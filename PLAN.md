@@ -47,7 +47,8 @@ Several stages require coordinated changes across two repositories:
 | 0 | Investigation script | — |
 | 1 | Rename to `sal_pixie` | — |
 | 2 | Drop `DEVICE_TYPE_GATEWAY` usage, drop RSSI heuristic, typed runtime data | Remove `DEVICE_TYPE_GATEWAY`, rename parser access to `major_type`/`minor_type`, add `py.typed` marker, bump to 0.2.0 |
-| 3 | Service exception wrapping, translations | — |
+| 2b | *Conditional.* If Phase A spike succeeds: resolve `BLEDevice` via HA, drop standalone path | *Conditional.* If Phase A succeeds: accept `BLEDevice`, use `bleak_retry_connector` |
+| 3 | Service exception wrapping, translations (incl. `HomeAssistantError` translation keys) | — |
 | 4 | Reauth + reconfigure flows | — |
 | 5 | Availability logging | — |
 | 6 | Diagnostics platform, repairs, icons | `DeviceStatus` must expose `major_type`, `minor_type`, raw manufacturer advert bytes |
@@ -113,6 +114,11 @@ Do this first. Everything downstream (tests, docs, quality scale declaration) em
 - Update `README.md`: project title, install paths, disclaimer
 - Keep `pigsydust==0.1.10` as the Python requirement (library can retain its codename)
 - Add a breaking-change note to the README for existing users
+
+### Verification (post-completion)
+
+- `custom_components/pigsydust/` is fully removed (the rename was a move, not a copy). If only `__pycache__` remains, delete the directory.
+- `grep -r "pigsydust" custom_components/sal_pixie/` returns only the library import lines, never the old domain.
 
 ## Stage 2 — Foundational Modernization
 
@@ -248,6 +254,10 @@ The `is_gateway` parameter and logging are removed. The function's docstring sto
 - Set `PARALLEL_UPDATES = 1` in `select.py`, `number.py`, `button.py` (writing platforms)
 - Set `PARALLEL_UPDATES = 0` in `sensor.py` (read-only, coordinator-driven)
 
+**8a. Drop redundant `unique_id` handling in the config flow.**
+
+`manifest.json` already declares `single_config_entry: true`, which is the canonical way to enforce singleton entries. Keeping `async_set_unique_id(DOMAIN)` + `_abort_if_unique_id_configured()` on top of that is redundant and tends to get flagged in core review. Remove both calls from `async_step_user` and `async_step_bluetooth`; the manifest flag handles the abort. The `already_configured` string can stay (the flag emits the same abort reason).
+
 **9. Pass `mypy --strict`** on the integration:
 
 ```bash
@@ -269,11 +279,13 @@ Add any necessary `# type: ignore[...]` comments with specific error codes, not 
 class DeviceStatus:
     address: int
     is_on: bool
-    mac: str | None
-    major_type: int  # byte[14] of manufacturer advert
-    minor_type: int | None  # byte[15] if present
-    raw_manufacturer_data: bytes | None  # entire blob
+    mac: str | None = None
+    major_type: int = 0  # byte[14] of manufacturer advert
+    minor_type: int | None = None  # byte[15] if present
+    raw_manufacturer_data: bytes | None = None  # entire blob
 ```
+
+All new fields must have defaults so existing callers (including test fixtures that construct `DeviceStatus` positionally) don't break on the 0.2.0 bump.
 
 **4. Add `py.typed` marker file** to the package so downstream users benefit from the library's type hints.
 
@@ -284,11 +296,83 @@ class DeviceStatus:
 ### Acceptance criteria
 
 - `mypy --strict custom_components/sal_pixie/` passes with zero errors
-- `grep -r "DEVICE_TYPE_GATEWAY\|is_gateway\|Gateway" custom_components/sal_pixie/` returns no results (except perhaps comments about the history)
+- `grep -rE "DEVICE_TYPE_GATEWAY|is_gateway|Gateway|0x47" custom_components/sal_pixie/` returns no results (except perhaps comments about the history)
 - `hass.data[DOMAIN]` is not set or read by any integration code
+- `grep -r "async_set_unique_id\|_abort_if_unique_id_configured" custom_components/sal_pixie/config_flow.py` returns no results (single_config_entry handles it)
 - Integration loads, all entities appear, light toggles work end-to-end in a live HA instance
 - Integration unloads and reloads cleanly without resource leaks (check `hass.data` is empty afterwards)
 - `manifest.json` requires `pigsydust==0.2.0` (once released)
+
+## Stage 2b — BLE Transport Investigation
+
+**Status:** Open question. This stage is an **investigation**, not a pre-decided implementation.
+
+### Why this is a stage at all
+
+The current integration uses a standalone `BleakClient` (via the `pigsydust` library) that bypasses HA's Bluetooth stack. Core reviewers are likely to object — first-party BLE integrations are expected to resolve a `BLEDevice` through `homeassistant.components.bluetooth` and open the connection via `bleak_retry_connector.establish_connection(...)`.
+
+### Why it isn't already done
+
+The project has been down this road. In prior work (see `pigsydust-py` commit `7281f57` "Use BleakClientBlueZDBus directly on Linux to bypass HA wrapper", and `ha-pigsydust` commit `fa9fba6` "Use standalone BleakClient instead of HA's wrapper") the following chain of failures was hit:
+
+1. **HA-wrapped `BleakClient.connect()`** — logs a warning and drops connections.
+2. **`bleak_retry_connector.establish_connection(BleakClient, ble_device, ...)`** — connect succeeds but later writes fail with `BleakError: Service Discovery has not been performed yet`. Root cause: HA's `BleakClientWithServiceCache` returns a cached service collection that is empty-or-stale for Telink mesh devices, because our chip advertises different service sets than the cache was populated with.
+3. **Forcing service discovery explicitly after connect** — helped on macOS/CoreBluetooth but failed on Linux/BlueZ, where HA monkey-patches `BleakClient` in a way that made the forced path impossible in the same shape.
+4. **Final shipped solution:** skip HA's wrapper entirely, construct `BleakClient` directly (or `BleakClientBlueZDBus` on Linux) from an address string.
+
+That "final solution" is what's in `__init__.py` and `config_flow.py` today and is what we need a core-acceptable alternative for.
+
+### What we don't know yet
+
+- Whether `establish_connection(..., cache_services=False, use_services_cache=False)` (and/or `disconnect_on_missing_services=True`) resolves the stale-cache pathology for Telink specifically. Earlier attempts predate consistent availability of those flags or didn't exercise them in combination.
+- Whether the Linux/BlueZ monkey-patching still blocks forced discovery in current HA + bleak versions. Much has changed in `habluetooth` since commit `7281f57`.
+- How other Telink-based core integrations solve this. Candidates to study: `led_ble`, `yalexs_ble`, `bthome`, `leaone_ble`, `xiaomi_ble`. At least one of these is known to interoperate with Telink chips under HA's wrapper.
+
+### Phase A — Spike (1–2 days, before committing to any implementation path)
+
+Small experimental PR in `pigsydust-py` on a branch. No release, no integration changes.
+
+1. Add a second `connect()` code path that uses `establish_connection` with `cache_services=False` and `disconnect_on_missing_services=True`.
+2. Run against one switch on both platforms:
+   - macOS CoreBluetooth (laptop, easiest to iterate on).
+   - Linux/BlueZ (NUC — production target).
+3. For each platform, verify:
+   - Initial connect + `login()` + `query_status()` + `turn_on/off()` succeed.
+   - A disconnect/reconnect cycle (pull-and-replug adapter, or put laptop to sleep) recovers cleanly.
+   - Service discovery doesn't regress on the second connection.
+4. Read the source of one reference Telink integration (`led_ble` is the most self-contained) to confirm no flag we're missing.
+
+**Success criterion for Phase A:** one clean `establish_connection`-based path that works on both platforms across a reconnect. Failure criterion: either platform breaks in a way that can't be resolved with public flags.
+
+### Phase B — If Phase A succeeds
+
+Then — and only then — does the implementation in the earlier draft of this stage apply:
+
+- Library: `PixieClient.__init__` accepts `BLEDevice | str`; `connect()` uses `establish_connection` on the `BLEDevice` path and retains the legacy `BleakClient(address)` path for stand-alone CLI use.
+- Library: declare `bleak-retry-connector` as a dependency; bump to `0.3.0`.
+- Integration: resolve via `async_ble_device_from_address(hass, address, connectable=True)` in `__init__.py` and `config_flow.py`; pass the `BLEDevice` into `PixieClient`.
+- Remove all "bypass HA's wrapper" code paths and comments.
+
+Acceptance criteria (Phase B only):
+- No `BleakClient(...)` or `PixieClient(address_str)` call sites remain in the integration.
+- `grep -rE "bypass|standalone" custom_components/sal_pixie/` returns no results.
+- Live end-to-end functionality on both macOS and Linux hosts, including a reconnect cycle.
+- `manifest.json` requires `pigsydust>=0.3.0`.
+
+### Phase C — If Phase A fails
+
+Two options, pick one based on how the failure looks:
+
+1. **Upstream fix, then wait.** File an issue on `home-assistant/core` (or `bluetooth-devices/bleak-retry-connector`, whichever is the right layer) with a minimal repro — ideally a tiny script that connects to a Telink device and demonstrates the stale-cache path. Submit a fix if the root cause is tractable. Park Stage 11 until it lands.
+
+2. **Submit anyway, with documented workaround.** Open the core PR keeping the standalone-`BleakClient` transport, with a detailed comment in `__init__.py` linking to the upstream issue and the bleak-retry-connector commit history that shows why. This might be rejected by reviewers, but it's a legitimate basis for a conversation and may even force the upstream fix. Requires that we've already filed the upstream issue so we have something concrete to point at.
+
+Under both options, Stage 7 tests continue in parallel — they mock the transport layer and don't depend on the real BLE path.
+
+### Amendments to other stages under each outcome
+
+- **Phase B outcome:** library bump becomes `0.3.0` and the manifest pin updates accordingly. Stage 2 library-side changes merge into the same release.
+- **Phase C outcome:** library stays at `0.2.0`. Stage 9's `discovery` / `docs-data-update` rules still hold; none of the quality-scale declarations are gated on the transport choice, but a prominent `comment:` on the closest applicable rule (probably a custom `comment` block at the top of `quality_scale.yaml`) should point reviewers at the reasoning.
 
 ## Stage 3 — Service Action Hardening
 
@@ -354,6 +438,33 @@ def _get_runtime_data(hass: HomeAssistant) -> SalPixieRuntimeData:
 - `HomeAssistantError` — for runtime failures (connection dropped, mesh unreachable)
 - `ServiceValidationError` — for invalid parameters (caught by voluptuous schema in most cases; rarely needed here)
 - Uncaught exceptions are silently eaten by HA's service dispatcher — never let that happen
+
+### Exception translations (satisfy `exception-translations` Gold rule now)
+
+Raise with `translation_domain` + `translation_key` rather than interpolated strings, so Frontend can localize:
+
+```python
+raise HomeAssistantError(
+    translation_domain=DOMAIN,
+    translation_key="mesh_unreachable",
+    translation_placeholders={"error": str(err)},
+) from err
+```
+
+Add a matching `exceptions` block to `strings.json` (mirror to `translations/en.json`):
+
+```json
+"exceptions": {
+  "mesh_unreachable": {
+    "message": "Could not reach the SAL Pixie mesh: {error}"
+  },
+  "command_failed": {
+    "message": "Command failed: {error}"
+  }
+}
+```
+
+Updating all three service handlers at once means Stage 9 can mark `exception-translations: done` instead of carrying it as a todo.
 
 ### Translations
 
@@ -583,12 +694,28 @@ def available(self) -> bool:
 
 No log calls here. The coordinator handles transitions.
 
+### Log-level audit (do this in the same stage)
+
+The current code logs chattily at INFO — every login attempt, every discovery candidate, every reconnect. HA core is strict about log-level hygiene: INFO is for state transitions the user cares about; everything else is DEBUG. Sweep the whole integration and demote:
+
+- `_LOGGER.info("Trying %s (%s, RSSI=%d)", ...)` in `config_flow.py` → DEBUG
+- `_LOGGER.info("Connected to %s, attempting login", ...)` → DEBUG
+- `_LOGGER.info("Login to %s successful", ...)` → DEBUG (the entry creation itself is the user-visible event)
+- `_LOGGER.info("Found %d Pixie candidates: ...")` → DEBUG
+- `_LOGGER.info("Selected Pixie device: %s ...")` in `__init__.py` → DEBUG
+- `_LOGGER.info("Attempting reconnect after disconnect")` in `coordinator.py` → DEBUG
+- `_LOGGER.info("Reconnected successfully")` → keep as INFO (user-relevant transition) — but emit only when coming back from a previously-logged failure
+- `_LOGGER.info("New device discovered: address=%d")` → keep as INFO (user-relevant, rare)
+
+Rule of thumb: if the line would fire more than a handful of times per day on a healthy mesh, it's DEBUG.
+
 ### Acceptance criteria
 
 - Pulling the BLE adapter logs **one** `WARNING` line about the connection loss (not one per entity)
 - Restoring the adapter logs **one** `INFO` line about recovery
 - All entities go unavailable within one coordinator cycle of the disconnect
 - Repeated connection/disconnection cycles don't flood logs
+- At default (INFO) log level, a healthy 24h period produces only startup/shutdown/new-device/reconnect lines — no per-poll or per-command chatter
 
 ---
 
@@ -766,19 +893,9 @@ Rename the existing `PixieGatewaySensor` to `PixieConnectedDeviceSensor` and upd
 - **6d**: Services show their icons in the Developer Tools picker
 - **6e**: No code or UI string references "gateway" as a role — the word survives only in product/SKU comments if at all
 
-## Stage 6 — Gold-Tier Platforms
-
-Each item can be a separate commit.
-
-- **Diagnostics** (`diagnostics.py`) — redacted config entry + coordinator dump
-- **Repairs** (`repairs.py`) — surface long-running disconnection as an actionable repair
-- **Stale devices** — cleanup of mesh addresses absent beyond a threshold
-- **Icon translations** (`icons.json`) — for services and entity states
-- **Connected-device sensor** (mesh-level) — rename existing gateway sensor to report which device HA is currently talking to, without claiming anything about roles
-
 ## Stage 7 — Test Suite
 
-The single biggest stage. Enables Bronze (basic tests), then Silver (95%+ coverage). Uses `pytest-homeassistant-custom-component` which mirrors the HA core test harness, so tests written here transplant cleanly into `tests/components/sal_pixie/` in Stage 11.
+The single biggest stage. Enables Bronze (basic tests) and the Silver `config-flow-test-coverage` rule (≥95% of `config_flow.py`). We also aim for ≥95% coverage overall, which is the Gold `test-coverage` rule — framing it as Silver in earlier drafts conflated the two. Uses `pytest-homeassistant-custom-component` which mirrors the HA core test harness, so tests written here transplant cleanly into `tests/components/sal_pixie/` in Stage 11.
 
 ### Directory layout
 
@@ -846,6 +963,8 @@ def mock_config_entry() -> MockConfigEntry:
 def mock_device_statuses():
     """Two switches: one on, one off."""
     from pigsydust import DeviceStatus
+    # `major_type` / `minor_type` / `raw_manufacturer_data` are added in Stage 2
+    # with defaults on the library side, so this construction stays valid either way.
     return {
         1: DeviceStatus(address=1, is_on=True, mac="AA:BB:CC:DD:EE:01"),
         2: DeviceStatus(address=2, is_on=False, mac="AA:BB:CC:DD:EE:02"),
@@ -1115,7 +1234,9 @@ rules:
   devices: done
   diagnostics: done
   discovery: done
-  discovery-update-info: done
+  discovery-update-info:
+    status: exempt
+    comment: unique_id is the domain string (single_config_entry), not a per-device identifier; there is nothing to update on rediscovery.
   docs-data-update: done
   docs-examples: done
   docs-known-limitations: done
@@ -1132,7 +1253,7 @@ rules:
     status: exempt
     comment: All exposed entities are useful by default.
   entity-translations: done
-  exception-translations: todo
+  exception-translations: done  # implemented in Stage 3
   icon-translations: done
   reconfiguration-flow: done
   repair-issues: done
@@ -1143,7 +1264,7 @@ rules:
   inject-websession:
     status: exempt
     comment: Integration uses local BLE, not HTTP.
-  strict-typing: todo
+  strict-typing: done  # gated on Stage 2 (pigsydust py.typed + mypy --strict)
 ```
 
 ### Acceptance criteria
@@ -1151,6 +1272,7 @@ rules:
 - Every rule in the Bronze + Silver sets has status `done`
 - Any `exempt` rule has a plain-English justification
 - File is valid YAML (`python -c 'import yaml; yaml.safe_load(open("quality_scale.yaml"))'`)
+- `python -m script.hassfest --integration-path <abs path to custom_components/sal_pixie>` (run from a local `home-assistant/core` checkout) exits cleanly. This catches ~90% of Stage 11 surprises — missing translation keys, manifest errors, config-flow registration issues — before forking core.
 
 ## Stage 10 — Brands Repo Submission
 
@@ -1186,7 +1308,10 @@ Final stage. Work happens in a fork of `home-assistant/core`, not in this repo.
 2. **Copy integration** from `custom_components/sal_pixie/` to `homeassistant/components/sal_pixie/`.
 3. **Copy tests** from `tests/` to `tests/components/sal_pixie/`.
 4. **Adjust imports** in test files: `custom_components.sal_pixie` → `homeassistant.components.sal_pixie`.
-5. **Update manifest `version`** field — HA core integrations do not include a `version` in `manifest.json` (only custom components do). Remove the field.
+5. **Manifest cleanup for core** — adjust three fields:
+   - Remove `version` (core integrations don't include it; only custom components do).
+   - Remove `issue_tracker` (core uses `home-assistant/core/issues` implicitly).
+   - Change `documentation` to `https://www.home-assistant.io/integrations/sal_pixie`.
 6. **Add to `homeassistant/generated/bluetooth.py`** — run `python -m script.hassfest` to regenerate from the manifest's `bluetooth` entries.
 7. **Add dependency** to `requirements_all.txt` and `requirements_test_all.txt` — both files are auto-generated by `python -m script.gen_requirements_all`.
 8. **Strict typing** — add `homeassistant.components.sal_pixie.*` to `.strict-typing` if Platinum tier is targeted.
@@ -1213,9 +1338,14 @@ Final stage. Work happens in a fork of `home-assistant/core`, not in this repo.
 ## Execution order
 
 ```
-0 (user investigation, non-blocking) 
-  → 1 → 2 → 3 → 4 → 5 → 6 (a/b/c/d parallel) → 7 → 8 → 9 → 10 → 11
+0 (user investigation, non-blocking)
+  → 1 → 2 → 2b.PhaseA (spike)
+                ├─ success → 2b.PhaseB → 3 → 4 → 5 → 6 (a/b/c/d parallel) → 7 → 8 → 9 → 10 → 11
+                └─ failure → 2b.PhaseC (upstream issue / documented workaround)
+                               → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10 → 11 (11 may stall)
 ```
+
+Stages 3–10 are independent of the Phase A outcome. Only Stage 11 (core submission) is gated on having a transport story reviewers will accept.
 
 ### Recommended first milestone
 
