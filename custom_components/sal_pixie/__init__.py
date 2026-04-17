@@ -19,7 +19,7 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
 from homeassistant.helpers.typing import ConfigType
-from pigsydust import PixieClient
+from pigsydust import PixieClient, parse_pixie_advert
 
 from .const import CONF_MESH_PASSWORD, DOMAIN, MESH_NAME
 
@@ -83,14 +83,9 @@ def _find_best_pixie_device(hass: HomeAssistant) -> str | None:
 
 
 def _gateway_mac_for(hass: HomeAssistant, address: str) -> bytes | None:
-    """Return the 6-byte mesh MAC for the given BLE address.
-
-    On Linux/BlueZ the BLE address string is the MAC. On macOS/CoreBluetooth
-    the "address" is a CoreBluetooth UUID with no MAC component, so we have
-    to reconstruct the MAC from the manufacturer-data advertisement bytes
-    (bytes 2..5, in reverse order, into mac[5..2]).
-    """
+    """Return the 6-byte mesh MAC for the given BLE address."""
     if platform.system() != "Darwin":
+        # Linux/BlueZ: the BLE address string is the MAC.
         parts = address.split(":")
         if len(parts) == 6:
             try:
@@ -99,18 +94,13 @@ def _gateway_mac_for(hass: HomeAssistant, address: str) -> bytes | None:
                 return None
         return None
 
+    # macOS/CoreBluetooth: the "address" is a CoreBluetooth UUID, so
+    # recover the MAC from the manufacturer-data advert.
     for info in async_discovered_service_info(hass, connectable=True):
         if info.address != address:
             continue
-        data = (info.manufacturer_data or {}).get(0x0211)
-        if data is None or len(data) < 6:
-            return None
-        mac = bytearray(6)
-        mac[5] = data[2]
-        mac[4] = data[3]
-        mac[3] = data[4]
-        mac[2] = data[5]
-        return bytes(mac)
+        advert = parse_pixie_advert(info.manufacturer_data)
+        return advert.mac if advert else None
     return None
 
 
