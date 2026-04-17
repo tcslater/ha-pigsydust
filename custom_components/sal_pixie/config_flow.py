@@ -33,6 +33,12 @@ class PixieConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_bluetooth(
         self, discovery_info: BluetoothServiceInfoBleak
     ) -> ConfigFlowResult:
+        # Every Pixie switch advertises the same mesh, so without
+        # dedup-by-unique-id HA spawns one discovery card per switch.
+        # single_config_entry:true stops a second entry being *created*
+        # but doesn't dedupe in-flight flows.
+        await self.async_set_unique_id(DOMAIN)
+        self._abort_if_unique_id_configured()
         self._discovery_info = discovery_info
         return await self.async_step_bluetooth_confirm()
 

@@ -133,9 +133,15 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         from . import _connect_and_login
 
         password = self.config_entry.data[CONF_MESH_PASSWORD]
-
-        # Close the previous bleak_client before opening a new one.
         runtime = self.config_entry.runtime_data
+
+        # Silence the old client's disconnect callback before closing the
+        # old bleak_client; otherwise our deliberate disconnect bounces
+        # back through PixieClient._on_ble_disconnect into
+        # coordinator._on_disconnect, which re-flips _disconnected=True
+        # after we clear it below, causing a second reconnect cycle.
+        runtime.client.set_disconnect_callback(lambda *_: None)
+
         if runtime.bleak_client.is_connected:
             try:
                 await runtime.bleak_client.disconnect()

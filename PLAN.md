@@ -269,9 +269,11 @@ The `is_gateway` parameter and logging are removed. The function's docstring sto
 - Set `PARALLEL_UPDATES = 1` in `select.py`, `number.py`, `button.py` (writing platforms)
 - Set `PARALLEL_UPDATES = 0` in `sensor.py` (read-only, coordinator-driven)
 
-**8a. Drop redundant `unique_id` handling in the config flow.**
+**8a. Tighten `unique_id` handling in the config flow.**
 
-`manifest.json` already declares `single_config_entry: true`, which is the canonical way to enforce singleton entries. Keeping `async_set_unique_id(DOMAIN)` + `_abort_if_unique_id_configured()` on top of that is redundant and tends to get flagged in core review. Remove both calls from `async_step_user` and `async_step_bluetooth`; the manifest flag handles the abort. The `already_configured` string can stay (the flag emits the same abort reason).
+`manifest.json` already declares `single_config_entry: true`, which enforces "at most one entry" at creation time. That's enough for the user-initiated `async_step_user` path, so the `async_set_unique_id(DOMAIN)` + `_abort_if_unique_id_configured()` calls there are redundant — remove them.
+
+`async_step_bluetooth` is different: every Pixie switch in the mesh broadcasts matching manufacturer data, and each advert initiates a separate discovery flow. Without `async_set_unique_id(DOMAIN)` + `_abort_if_unique_id_configured()` in the bluetooth step, the user sees one "Discovered" card per switch (8+ in a typical install) rather than a single one. Keep the calls on the bluetooth step; they force second-and-subsequent flows to abort with `already_in_progress` / `already_configured`.
 
 **9. Pass `mypy --strict`** on the integration:
 
