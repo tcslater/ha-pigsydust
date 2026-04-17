@@ -2,33 +2,34 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.light import ColorMode, LightEntity
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from pigsydust import DeviceStatus
-from pigsydust.const import DEVICE_TYPE_GATEWAY
+from pigsydust import DeviceStatus, PixieClient
 
 from .const import DOMAIN, SIGNAL_NEW_DEVICE
 from .coordinator import PixieCoordinator
+
+if TYPE_CHECKING:
+    from . import SalPixieConfigEntry
 
 PARALLEL_UPDATES = 1
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: "SalPixieConfigEntry",
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up light entities from a config entry."""
-    data = hass.data[DOMAIN][entry.entry_id]
-    coordinator: PixieCoordinator = data["coordinator"]
-    client = data["client"]
+    runtime = entry.runtime_data
+    coordinator = runtime.coordinator
+    client = runtime.client
 
     entities = [
         PixieLight(coordinator, entry, address, status, client)
@@ -38,7 +39,7 @@ async def async_setup_entry(
 
     @callback
     def _async_add_new_device(address: int) -> None:
-        status = coordinator.data.get(address)
+        status = coordinator.data.get(address) if coordinator.data else None
         if status is None:
             return
         async_add_entities(
@@ -66,19 +67,17 @@ class PixieLight(CoordinatorEntity[PixieCoordinator], LightEntity):
     def __init__(
         self,
         coordinator: PixieCoordinator,
-        entry: ConfigEntry,
+        entry: "SalPixieConfigEntry",
         address: int,
         status: DeviceStatus,
-        client,
+        client: PixieClient,
     ) -> None:
         super().__init__(coordinator)
         self._address = address
         self._attr_unique_id = f"{entry.entry_id}_{address}"
-
-        is_gateway = status.device_type == DEVICE_TYPE_GATEWAY
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, f"{entry.entry_id}_{address}")},
-            name=f"Pixie {'Gateway' if is_gateway else 'Switch'} {address}",
+            name=f"Pixie Switch {address}",
             manufacturer="SAL",
             model="Pixie",
             sw_version=client.firmware_version,

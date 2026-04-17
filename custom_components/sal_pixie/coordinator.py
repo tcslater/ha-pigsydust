@@ -1,10 +1,11 @@
-"""Data update coordinator for Pixie Mesh."""
+"""Data update coordinator for SAL Pixie."""
 
 from __future__ import annotations
 
 import logging
 import time
 from datetime import timedelta
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
@@ -12,6 +13,11 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from pigsydust import DeviceStatus, PixieClient
 from pigsydust.crypto import LoginError
+
+from .const import CONF_MESH_PASSWORD, SIGNAL_NEW_DEVICE
+
+if TYPE_CHECKING:
+    from . import SalPixieConfigEntry
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -26,18 +32,23 @@ _PUSH_FRESH_SECS = 120  # skip poll if push data arrived within this window
 class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
     """Coordinate data updates from a Pixie mesh."""
 
+    config_entry: "SalPixieConfigEntry"
+
     def __init__(
-        self, hass: HomeAssistant, client: PixieClient, entry_id: str
+        self,
+        hass: HomeAssistant,
+        entry: "SalPixieConfigEntry",
+        client: PixieClient,
     ) -> None:
         super().__init__(
             hass,
             _LOGGER,
-            name="Pixie Mesh",
+            name="SAL Pixie",
             update_interval=SCAN_INTERVAL,
+            config_entry=entry,
             always_update=False,
         )
         self.client = client
-        self._entry_id = entry_id
         self._unsubscribe = client.on_status_update(self._on_push_update)
         self._command_timestamps: dict[int, float] = {}
         self._last_push: float = 0
@@ -50,15 +61,13 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
 
     def _check_new_devices(self, data: dict[int, DeviceStatus]) -> None:
         """Fire a dispatcher signal for each newly discovered device."""
-        from .const import SIGNAL_NEW_DEVICE
-
         new = set(data) - self._known_addresses
         self._known_addresses = set(data)
         for address in new:
             _LOGGER.info("New device discovered: address=%d", address)
             async_dispatcher_send(
                 self.hass,
-                SIGNAL_NEW_DEVICE.format(entry_id=self._entry_id),
+                SIGNAL_NEW_DEVICE.format(entry_id=self.config_entry.entry_id),
                 address,
             )
 
@@ -70,7 +79,7 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         self._check_new_devices(self.data)
         self.async_set_updated_data(self.data)
 
-    def _on_disconnect(self, *_args) -> None:
+    def _on_disconnect(self, *_args: Any) -> None:
         """Called when the BLE connection drops."""
         _LOGGER.warning("BLE connection lost (disconnect callback)")
         self._disconnected = True
@@ -79,7 +88,7 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         # If disconnected, reconnect immediately.
         if self._disconnected:
             self._disconnected = False
-            _LOGGER.info("Attempting reconnect after disconnect")
+            _LOGGER.debug("Attempting reconnect after disconnect")
             await self._try_reconnect()
             if not self.client.is_connected:
                 raise UpdateFailed("BLE disconnected — reconnecting")
@@ -121,24 +130,18 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
 
     async def _try_reconnect(self) -> None:
         """Attempt to reconnect to the best available Pixie device."""
-        from .const import DOMAIN
+        from . import _connect_and_login
 
-        for data in self.hass.data.get(DOMAIN, {}).values():
-            if data.get("client") is self.client:
-                password = data["password"]
-                break
-        else:
-            return
+        password = self.config_entry.data[CONF_MESH_PASSWORD]
 
         try:
-            from . import _connect_and_login
             new_client = await _connect_and_login(
                 self.hass, password, disconnect_callback=self._on_disconnect
             )
             self._unsubscribe()
             self.client = new_client
             self._unsubscribe = new_client.on_status_update(self._on_push_update)
-            data["client"] = new_client
+            self.config_entry.runtime_data.client = new_client
             self._disconnected = False
             _LOGGER.info("Reconnected successfully")
         except Exception:

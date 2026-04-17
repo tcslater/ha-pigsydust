@@ -1,8 +1,11 @@
-"""Pixie Mesh BLE integration for Home Assistant."""
+"""SAL Pixie BLE mesh integration for Home Assistant."""
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import voluptuous as vol
 from homeassistant.components.bluetooth import async_discovered_service_info
@@ -13,7 +16,9 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from pigsydust import PixieClient
 
 from .const import CONF_MESH_PASSWORD, DOMAIN, MESH_NAME
-from .coordinator import PixieCoordinator
+
+if TYPE_CHECKING:
+    from .coordinator import PixieCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -25,54 +30,57 @@ SERVICE_SET_INDICATOR = "set_indicator"
 SERVICE_ALL_ON = "all_on"
 SERVICE_ALL_OFF = "all_off"
 
+LED_OFF = "Off"
+LED_BLUE = "Blue"
+LED_ORANGE = "Orange"
+LED_PURPLE = "Purple"
+
+
+@dataclass
+class SalPixieRuntimeData:
+    """Runtime state attached to the config entry."""
+
+    client: PixieClient
+    coordinator: "PixieCoordinator"
+    password: str
+    mesh_mode: str = LED_OFF
+    mesh_brightness: int = 15
+    device_modes: dict[int, str] = field(default_factory=dict)
+    device_brightness: dict[int, int] = field(default_factory=dict)
+
+
+type SalPixieConfigEntry = ConfigEntry[SalPixieRuntimeData]
+
 
 def _find_best_pixie_device(hass: HomeAssistant) -> str | None:
-    """Find the strongest Pixie BLE device visible to HA's bluetooth stack.
-
-    Prefers gateway devices (type 0x47) over leaf nodes (0x45).
-    """
-    best_address = None
+    """Find the highest-RSSI Pixie device visible to HA's bluetooth stack."""
+    best_address: str | None = None
     best_rssi = -999
-    best_is_gateway = False
 
     for info in async_discovered_service_info(hass, connectable=True):
-        mfr_data = info.manufacturer_data or {}
-        if 0x0211 not in mfr_data:
+        if 0x0211 not in (info.manufacturer_data or {}):
             continue
 
-        data = mfr_data[0x0211]
-        is_gateway = len(data) >= 15 and data[14] == 0x47
-
         _LOGGER.debug(
-            "Pixie candidate: %s (%s) RSSI=%d gateway=%s",
-            info.address, info.name, info.rssi, is_gateway,
+            "Pixie candidate: %s (%s) RSSI=%d",
+            info.address, info.name, info.rssi,
         )
 
-        if (is_gateway and not best_is_gateway) or \
-           (is_gateway == best_is_gateway and info.rssi > best_rssi):
+        if info.rssi > best_rssi:
             best_rssi = info.rssi
             best_address = info.address
-            best_is_gateway = is_gateway
 
     if best_address:
-        _LOGGER.info(
-            "Selected Pixie device: %s (RSSI=%d, gateway=%s)",
-            best_address, best_rssi, best_is_gateway,
-        )
+        _LOGGER.debug("Selected Pixie device: %s (RSSI=%d)", best_address, best_rssi)
     return best_address
 
 
 async def _connect_and_login(
     hass: HomeAssistant,
     password: str,
-    disconnect_callback: callable | None = None,
+    disconnect_callback: Callable[..., None] | None = None,
 ) -> PixieClient:
-    """Connect to the best available Pixie device using standalone BleakClient.
-
-    We use HA's bluetooth stack only for discovery (finding the address).
-    The actual connection uses PixieClient's standalone connect() which
-    creates a raw BleakClient with proper service discovery.
-    """
+    """Connect to the best available Pixie device."""
     address = _find_best_pixie_device(hass)
     if address is None:
         raise ConfigEntryNotReady("No Pixie mesh device found via HA bluetooth")
@@ -92,24 +100,24 @@ async def _connect_and_login(
     return client
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up Pixie Mesh from a config entry."""
+async def async_setup_entry(hass: HomeAssistant, entry: SalPixieConfigEntry) -> bool:
+    """Set up SAL Pixie from a config entry."""
+    from .coordinator import PixieCoordinator
+
     password = entry.data[CONF_MESH_PASSWORD]
 
     client = await _connect_and_login(hass, password)
 
-    coordinator = PixieCoordinator(hass, client, entry.entry_id)
+    coordinator = PixieCoordinator(hass, entry, client)
     client.set_disconnect_callback(coordinator._on_disconnect)
     await coordinator.async_config_entry_first_refresh()
     coordinator._known_addresses = set(coordinator.data or {})
 
-    hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.entry_id] = {
-        "client": client,
-        "coordinator": coordinator,
-        "indicator_modes": {},
-        "password": password,
-    }
+    entry.runtime_data = SalPixieRuntimeData(
+        client=client,
+        coordinator=coordinator,
+        password=password,
+    )
 
     _register_services(hass)
 
@@ -117,20 +125,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: SalPixieConfigEntry) -> bool:
     """Unload a config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
-        data = hass.data[DOMAIN].pop(entry.entry_id)
-        await data["coordinator"].async_shutdown()
-        await data["client"].disconnect()
+        runtime = entry.runtime_data
+        await runtime.coordinator.async_shutdown()
+        await runtime.client.disconnect()
     return unload_ok
 
 
-def _get_client(hass: HomeAssistant) -> PixieClient:
-    for entry_data in hass.data.get(DOMAIN, {}).values():
-        return entry_data["client"]
-    raise ValueError("No Pixie Mesh integration configured")
+def _get_runtime(hass: HomeAssistant) -> SalPixieRuntimeData:
+    """Return the loaded runtime data, or raise if the integration isn't loaded."""
+    entries = hass.config_entries.async_loaded_entries(DOMAIN)
+    if not entries:
+        raise ValueError("SAL Pixie integration is not configured or not yet loaded")
+    return entries[0].runtime_data
 
 
 def _register_services(hass: HomeAssistant) -> None:
@@ -138,7 +148,7 @@ def _register_services(hass: HomeAssistant) -> None:
         return
 
     async def handle_set_indicator(call: ServiceCall) -> None:
-        client = _get_client(hass)
+        client = _get_runtime(hass).client
         mode = call.data[ATTR_MODE]
         brightness = call.data.get(ATTR_BRIGHTNESS, 15)
 
@@ -168,12 +178,10 @@ def _register_services(hass: HomeAssistant) -> None:
     )
 
     async def handle_all_on(call: ServiceCall) -> None:
-        client = _get_client(hass)
-        await client.turn_on(0xFFFF)
+        await _get_runtime(hass).client.turn_on(0xFFFF)
 
     async def handle_all_off(call: ServiceCall) -> None:
-        client = _get_client(hass)
-        await client.turn_off(0xFFFF)
+        await _get_runtime(hass).client.turn_off(0xFFFF)
 
     hass.services.async_register(DOMAIN, SERVICE_ALL_ON, handle_all_on)
     hass.services.async_register(DOMAIN, SERVICE_ALL_OFF, handle_all_off)

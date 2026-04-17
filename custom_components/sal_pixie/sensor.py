@@ -1,9 +1,10 @@
-"""Sensor platform for Pixie Mesh routing metrics."""
+"""Sensor platform for SAL Pixie routing metrics."""
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from homeassistant.components.sensor import SensorEntity, SensorStateClass
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -14,23 +15,22 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import DOMAIN, MESH_DEVICE_INFO, SIGNAL_NEW_DEVICE
 from .coordinator import PixieCoordinator
 
+if TYPE_CHECKING:
+    from . import SalPixieConfigEntry
+
+PARALLEL_UPDATES = 0
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: "SalPixieConfigEntry",
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up sensor entities."""
-    data = hass.data[DOMAIN][entry.entry_id]
-    coordinator: PixieCoordinator = data["coordinator"]
-    client = data["client"]
+    runtime = entry.runtime_data
+    coordinator = runtime.coordinator
 
-    entities: list[SensorEntity] = []
-
-    # Mesh-wide: current gateway sensor.
-    entities.append(PixieGatewaySensor(entry, client, coordinator))
-
-    # Per-device: routing metric.
+    entities: list[SensorEntity] = [PixieGatewaySensor(entry, coordinator)]
     for address in (coordinator.data or {}):
         entities.append(PixieRoutingMetric(coordinator, entry, address))
 
@@ -65,7 +65,7 @@ class PixieRoutingMetric(CoordinatorEntity[PixieCoordinator], SensorEntity):
     def __init__(
         self,
         coordinator: PixieCoordinator,
-        entry: ConfigEntry,
+        entry: "SalPixieConfigEntry",
         address: int,
     ) -> None:
         super().__init__(coordinator)
@@ -86,28 +86,30 @@ class PixieRoutingMetric(CoordinatorEntity[PixieCoordinator], SensorEntity):
 
 
 class PixieGatewaySensor(CoordinatorEntity[PixieCoordinator], SensorEntity):
-    """Shows which mesh device is the current BLE gateway."""
+    """Shows which mesh device HA is currently connected to."""
 
     has_entity_name = True
     _attr_name = "Gateway"
     _attr_icon = "mdi:router-wireless"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
-    def __init__(self, entry: ConfigEntry, client, coordinator: PixieCoordinator) -> None:
+    def __init__(
+        self,
+        entry: "SalPixieConfigEntry",
+        coordinator: PixieCoordinator,
+    ) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"{entry.entry_id}_mesh_gateway"
         self._attr_device_info = MESH_DEVICE_INFO(entry)
 
     @property
     def native_value(self) -> str | None:
-        # The gateway's device address is the last byte of its MAC.
         client = self.coordinator.client
         mac = client._gw_mac
         if mac == b"\x00" * 6:
             return None
         dev_addr = mac[5]
 
-        # Look up the HA device name from the device registry.
         from homeassistant.helpers import device_registry as dr
         dev_registry = dr.async_get(self.hass)
         for entry in dev_registry.devices.values():
@@ -117,7 +119,7 @@ class PixieGatewaySensor(CoordinatorEntity[PixieCoordinator], SensorEntity):
         return client.gateway_mac
 
     @property
-    def extra_state_attributes(self) -> dict:
+    def extra_state_attributes(self) -> dict[str, str | int | None]:
         client = self.coordinator.client
         return {
             "mac": client.gateway_mac,
