@@ -83,6 +83,10 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         """Called when the BLE connection drops."""
         _LOGGER.warning("BLE connection lost (disconnect callback)")
         self._disconnected = True
+        # Without this, the reconnect only fires on the next scheduled
+        # poll (up to SCAN_INTERVAL = 5 minutes away). Requesting a
+        # refresh now collapses that window to a few seconds.
+        self.hass.async_create_task(self.async_request_refresh())
 
     async def _async_update_data(self) -> dict[int, DeviceStatus]:
         # If disconnected, reconnect immediately.
