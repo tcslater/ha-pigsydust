@@ -91,8 +91,11 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
 
     def _on_disconnect(self, *_args: Any) -> None:
         """Called when the BLE connection drops."""
-        _LOGGER.warning("BLE connection lost (disconnect callback)")
         self._disconnected = True
+        # Push empty data immediately so every CoordinatorEntity.available
+        # flips to False within this tick, instead of waiting for the next
+        # failed poll to set last_update_success=False.
+        self.async_set_updated_data({})
         # Without this, the reconnect only fires on the next scheduled
         # poll (up to SCAN_INTERVAL = 5 minutes away). Requesting a
         # refresh now collapses that window to a few seconds.
@@ -105,6 +108,8 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
             _LOGGER.debug("Attempting reconnect after disconnect")
             await self._try_reconnect()
             if not self.client.is_connected:
+                if self.last_update_success:
+                    _LOGGER.warning("SAL Pixie mesh connection lost")
                 raise UpdateFailed("BLE disconnected — reconnecting")
 
         # Skip poll if push data is fresh — avoid unnecessary BLE traffic.
@@ -122,12 +127,21 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
             result = await self.client.query_status()
         except LoginError as err:
             raise ConfigEntryAuthFailed from err
-        except ConnectionError:
-            _LOGGER.warning("BLE connection lost, attempting reconnect")
+        except ConnectionError as err:
+            # last_update_success still reflects the *previous* call's
+            # outcome at this point, so logging it here gates the warning
+            # to the moment we transition from healthy to unhealthy.
+            if self.last_update_success:
+                _LOGGER.warning("SAL Pixie mesh connection lost: %s", err)
             await self._try_reconnect()
-            raise UpdateFailed("BLE connection lost — reconnecting")
+            raise UpdateFailed(f"BLE connection lost: {err}") from err
         except Exception as err:
             raise UpdateFailed(f"Error querying status: {err}") from err
+
+        # If we're here, the poll succeeded — log the recovery transition
+        # (only on the edge from unhealthy to healthy).
+        if not self.last_update_success:
+            _LOGGER.info("SAL Pixie mesh connection restored")
 
         # Merge with existing data. Skip poll results for recently
         # commanded devices (grace period prevents stale overwrite).
