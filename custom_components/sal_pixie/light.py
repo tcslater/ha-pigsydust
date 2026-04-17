@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.light import ColorMode, LightEntity
@@ -126,10 +127,5 @@ class PixieLight(CoordinatorEntity[PixieCoordinator], LightEntity):
             return
         current = self.coordinator.data.get(self._address)
         if current is not None:
-            self.coordinator.data[self._address] = DeviceStatus(
-                address=current.address,
-                is_on=is_on,
-                device_type=current.device_type,
-                mac=current.mac,
-            )
+            self.coordinator.data[self._address] = replace(current, is_on=is_on)
         self.async_write_ha_state()
