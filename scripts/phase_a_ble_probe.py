@@ -46,7 +46,8 @@ logging.getLogger("bleak_retry_connector").setLevel(logging.INFO)
 
 MESH_NAME = "Smart Light"
 SCAN_TIMEOUT = 10.0
-RECONNECT_PAUSE = 3.0
+RECONNECT_PAUSE = 8.0
+SCAN_RETRIES = 3
 
 
 @dataclass
@@ -95,24 +96,40 @@ def _mac_from_linux_address(address: str) -> bytes | None:
 
 
 async def _find_pixie() -> tuple[BLEDevice, dict[int, bytes]]:
-    _LOGGER.info("Scanning for Pixie devices (timeout=%.0fs)...", SCAN_TIMEOUT)
-    devices = await BleakScanner.discover(timeout=SCAN_TIMEOUT, return_adv=True)
-
-    best: tuple[BLEDevice, int, dict[int, bytes]] | None = None
-    for d, adv in devices.values():
-        mfr_data = dict(adv.manufacturer_data or {})
-        if MANUFACTURER_ID not in mfr_data:
+    """Scan once with retries; return the best candidate found."""
+    last_err: Exception | None = None
+    for attempt in range(1, SCAN_RETRIES + 1):
+        _LOGGER.info("Scanning for Pixie devices (attempt %d/%d, timeout=%.0fs)...",
+                     attempt, SCAN_RETRIES, SCAN_TIMEOUT)
+        try:
+            devices = await BleakScanner.discover(timeout=SCAN_TIMEOUT, return_adv=True)
+        except Exception as err:
+            last_err = err
+            _LOGGER.warning("  scan failed: %s", err)
+            await asyncio.sleep(3.0)
             continue
-        _LOGGER.info("  candidate %s (%s) RSSI=%d", d.address, d.name, adv.rssi)
-        if best is None or adv.rssi > best[1]:
-            best = (d, adv.rssi, mfr_data)
 
-    if best is None:
-        raise RuntimeError("No Pixie device found in BLE advertisements")
+        best: tuple[BLEDevice, int, dict[int, bytes]] | None = None
+        for d, adv in devices.values():
+            mfr_data = dict(adv.manufacturer_data or {})
+            if MANUFACTURER_ID not in mfr_data:
+                continue
+            _LOGGER.info("  candidate %s (%s) RSSI=%d", d.address, d.name, adv.rssi)
+            if best is None or adv.rssi > best[1]:
+                best = (d, adv.rssi, mfr_data)
 
-    device, rssi, mfr_data = best
-    _LOGGER.info("Picked %s (%s) RSSI=%d", device.address, device.name, rssi)
-    return device, mfr_data
+        if best is not None:
+            device, rssi, mfr_data = best
+            _LOGGER.info("Picked %s (%s) RSSI=%d", device.address, device.name, rssi)
+            return device, mfr_data
+
+        _LOGGER.warning("  scan returned 0 Pixie devices; retrying after pause")
+        await asyncio.sleep(5.0)
+
+    raise RuntimeError(
+        f"No Pixie device found in BLE advertisements after {SCAN_RETRIES} attempts"
+        + (f" (last error: {last_err})" if last_err else "")
+    )
 
 
 async def _run_workflow(
@@ -180,7 +197,15 @@ async def _run_workflow(
         # (login + query is the real signal).
         combo.initial_toggle = True
 
+    # PixieClient.disconnect() is a no-op in HA-managed mode (it won't
+    # close the bleak_client we fed it via set_ble_client), so we must
+    # close the BleakClient ourselves to release the adapter.
     await pixie.disconnect()
+    try:
+        if bleak_client.is_connected:
+            await bleak_client.disconnect()
+    except Exception:
+        _LOGGER.debug("  bleak_client.disconnect() raised; continuing", exc_info=True)
 
 
 async def _run_combo(
@@ -219,22 +244,20 @@ async def _run_combo(
 
 
 def _print_versions() -> None:
-    import bleak
-    import bleak_retry_connector
-    import pigsydust
+    from importlib.metadata import PackageNotFoundError, version
 
-    try:
-        import habluetooth  # type: ignore[import-not-found]
-        hab_version = getattr(habluetooth, "__version__", "unknown")
-    except ImportError:
-        hab_version = "(not installed)"
+    def _safe_version(name: str) -> str:
+        try:
+            return version(name)
+        except PackageNotFoundError:
+            return "(not installed)"
 
     _LOGGER.info("platform: %s %s", platform.system(), platform.release())
     _LOGGER.info("python: %s", sys.version.split()[0])
-    _LOGGER.info("bleak: %s", bleak.__version__)
-    _LOGGER.info("bleak-retry-connector: %s", bleak_retry_connector.__version__)
-    _LOGGER.info("pigsydust: %s", getattr(pigsydust, "__version__", "unknown"))
-    _LOGGER.info("habluetooth: %s", hab_version)
+    _LOGGER.info("bleak: %s", _safe_version("bleak"))
+    _LOGGER.info("bleak-retry-connector: %s", _safe_version("bleak-retry-connector"))
+    _LOGGER.info("pigsydust: %s", _safe_version("pigsydust"))
+    _LOGGER.info("habluetooth: %s", _safe_version("habluetooth"))
 
 
 async def main(password: str) -> int:
