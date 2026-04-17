@@ -292,16 +292,239 @@ class DeviceStatus:
 
 ## Stage 3 — Service Action Hardening
 
-- Wrap service handlers in `try/except` converting to `HomeAssistantError`
-- Move service registration into `async_setup()` so services survive entry reloads
-- Add service-action translations to `strings.json` / `translations/en.json`
+Two goals: services survive integration reloads, and failures surface to users as proper HA errors rather than bare Python exceptions.
+
+### Move registration to `async_setup`
+
+Services are currently registered inside `async_setup_entry`, which means they disappear on unload/reload. Modern HA pattern registers them once at startup:
+
+```python
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Register services once at integration load."""
+
+    async def handle_set_indicator(call: ServiceCall) -> None:
+        runtime = _get_runtime_data(hass)
+        try:
+            mode = call.data[ATTR_MODE]
+            brightness = call.data.get(ATTR_BRIGHTNESS, 15)
+            await _apply_indicator(runtime.client, mode, brightness)
+        except ConnectionError as err:
+            raise HomeAssistantError(
+                f"Could not reach SAL Pixie mesh: {err}"
+            ) from err
+
+    async def handle_all_on(call: ServiceCall) -> None:
+        runtime = _get_runtime_data(hass)
+        try:
+            await runtime.client.turn_on(0xFFFF)
+        except ConnectionError as err:
+            raise HomeAssistantError(f"Command failed: {err}") from err
+
+    async def handle_all_off(call: ServiceCall) -> None:
+        runtime = _get_runtime_data(hass)
+        try:
+            await runtime.client.turn_off(0xFFFF)
+        except ConnectionError as err:
+            raise HomeAssistantError(f"Command failed: {err}") from err
+
+    hass.services.async_register(
+        DOMAIN, SERVICE_SET_INDICATOR, handle_set_indicator, schema=SET_INDICATOR_SCHEMA,
+    )
+    hass.services.async_register(DOMAIN, SERVICE_ALL_ON, handle_all_on)
+    hass.services.async_register(DOMAIN, SERVICE_ALL_OFF, handle_all_off)
+    return True
+```
+
+### Runtime-data lookup helper
+
+With `single_config_entry: true`, there's at most one loaded entry:
+
+```python
+def _get_runtime_data(hass: HomeAssistant) -> SalPixieRuntimeData:
+    entries = hass.config_entries.async_loaded_entries(DOMAIN)
+    if not entries:
+        raise HomeAssistantError(
+            "SAL Pixie integration is not configured or not yet loaded"
+        )
+    return entries[0].runtime_data
+```
+
+### Exception categories
+
+- `HomeAssistantError` — for runtime failures (connection dropped, mesh unreachable)
+- `ServiceValidationError` — for invalid parameters (caught by voluptuous schema in most cases; rarely needed here)
+- Uncaught exceptions are silently eaten by HA's service dispatcher — never let that happen
+
+### Translations
+
+Add a `services` block to `strings.json` and mirror it to `translations/en.json`:
+
+```json
+"services": {
+  "set_indicator": {
+    "name": "Set indicator LED",
+    "description": "Sets the indicator LED colour and brightness on all mesh switches.",
+    "fields": {
+      "mode": {
+        "name": "Mode",
+        "description": "Indicator colour (off, blue, orange, purple)."
+      },
+      "brightness": {
+        "name": "Brightness",
+        "description": "LED brightness (0-15). Only applies to orange and purple modes."
+      }
+    }
+  },
+  "all_on": {
+    "name": "Turn all switches on",
+    "description": "Sends an on command to every switch in the mesh."
+  },
+  "all_off": {
+    "name": "Turn all switches off",
+    "description": "Sends an off command to every switch in the mesh."
+  }
+}
+```
+
+### Acceptance criteria
+
+- Services remain callable after `config_entries.async_reload(entry.entry_id)`
+- Calling a service while the mesh is offline raises a visible error in the UI (not a silent failure)
+- Service names and descriptions appear correctly in the Developer Tools → Services picker
+- `strings.json` and `translations/en.json` pass `python -m script.translations develop` (HA's translations linter) when the integration is in HA core — smoke-test with `jq empty` for valid JSON during custom-component development
 
 ## Stage 4 — Config Flow Expansion
 
-- Extract shared connection-test helper
-- Add `async_step_reauth()` + `async_step_reauth_confirm()` triggered on `ConfigEntryAuthFailed`
-- Add `async_step_reconfigure()` for in-place home key updates
-- Add corresponding strings
+Adds reauth (credentials expired) and reconfigure (user wants to change home key without removing the integration) flows. Both use modern HA helpers that keep the entry identity stable.
+
+### Shared connection-test helper
+
+Currently `_test_connection_any` lives on the flow class. Extract it so the reauth/reconfigure steps can reuse the exact same validation logic:
+
+```python
+async def _test_connection(hass: HomeAssistant, password: str) -> str | None:
+    """Return None on success, or an error key ('cannot_connect' / 'invalid_auth')."""
+    candidates = [
+        (info.rssi, info.address)
+        for info in async_discovered_service_info(hass, connectable=True)
+        if 0x0211 in (info.manufacturer_data or {})
+    ]
+    candidates.sort(reverse=True)
+    if not candidates:
+        return "cannot_connect"
+
+    for _rssi, address in candidates:
+        client = PixieClient(address)
+        try:
+            await client.connect()
+        except Exception:
+            continue
+        try:
+            await client.login(MESH_NAME, password)
+            await client.disconnect()
+            return None
+        except LoginError:
+            await client.disconnect()
+            return "invalid_auth"
+        except Exception:
+            await client.disconnect()
+    return "cannot_connect"
+```
+
+### Reauth flow
+
+Triggered by `ConfigEntryAuthFailed` raised from the coordinator:
+
+```python
+# coordinator.py — already raises this in _async_update_data when LoginError occurs
+except LoginError as err:
+    raise ConfigEntryAuthFailed from err
+```
+
+```python
+# config_flow.py
+from collections.abc import Mapping
+
+class SalPixieConfigFlow(ConfigFlow, domain=DOMAIN):
+    VERSION = 1
+
+    async def async_step_reauth(
+        self, entry_data: Mapping[str, Any]
+    ) -> ConfigFlowResult:
+        """Entry point for the reauth flow."""
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            error = await _test_connection(self.hass, user_input[CONF_MESH_PASSWORD])
+            if error is None:
+                return self.async_update_reload_and_abort(
+                    self._get_reauth_entry(),
+                    data={CONF_MESH_PASSWORD: user_input[CONF_MESH_PASSWORD]},
+                )
+            errors["base"] = error
+
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=vol.Schema({vol.Required(CONF_MESH_PASSWORD): str}),
+            errors=errors,
+        )
+```
+
+### Reconfigure flow
+
+Similar shape, user-initiated rather than auth-triggered:
+
+```python
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            error = await _test_connection(self.hass, user_input[CONF_MESH_PASSWORD])
+            if error is None:
+                return self.async_update_reload_and_abort(
+                    self._get_reconfigure_entry(),
+                    data={CONF_MESH_PASSWORD: user_input[CONF_MESH_PASSWORD]},
+                )
+            errors["base"] = error
+
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=vol.Schema({vol.Required(CONF_MESH_PASSWORD): str}),
+            errors=errors,
+        )
+```
+
+### Strings additions
+
+Append to the `config.step` block in `strings.json`:
+
+```json
+"reauth_confirm": {
+  "title": "Reauthenticate SAL Pixie",
+  "description": "The stored home key is no longer working. Enter the current home key.",
+  "data": { "home_key": "Home key" }
+},
+"reconfigure": {
+  "title": "Reconfigure SAL Pixie",
+  "description": "Enter the new home key for the mesh.",
+  "data": { "home_key": "Home key" }
+}
+```
+
+Mirror to `translations/en.json`.
+
+### Acceptance criteria
+
+- Triggering reauth via `entry.async_start_reauth(hass)` shows the correct form
+- Completing reauth with a valid key reloads the entry and clears the reauth notification
+- Completing reconfigure updates `entry.data[CONF_MESH_PASSWORD]` and reloads the entry
+- Entry ID and unique_id remain stable across both flows (no duplicate entries created)
+- Invalid keys show the `invalid_auth` error inline on the form
 
 ## Stage 5 — Observability
 
