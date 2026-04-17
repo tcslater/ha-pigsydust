@@ -89,14 +89,27 @@ The original code named a constant `DEVICE_TYPE_GATEWAY` with value `0x47`, infe
 - Observed 8 wall switches over 5 minutes with HA and Pixie app both active
 - All 8 devices advertised `majorType = 0x45` throughout
 - No device advertised `0x47` during the observation window
-- The `0x47` value was observed on a wall switch during an earlier reverse-engineering session, but its meaning remains unknown
+- The `0x47` value was observed on a wall switch during an earlier reverse-engineering session, but its meaning was not yet understood at the time
+
+### Follow-up findings from `bt_struct.framework` disassembly
+
+Deeper analysis of `_BTDataHandle_manu2string`, `_BTDataHandle_manu_elem`, and `_BTDataHandle_dataParse` revealed that the byte the app labels `majorType` is **not a device-class enum at all**. It is a packed byte whose bits mirror the layout of byte[0xd] of a `fun=0x1b` device-info response packet:
+
+- **bit 0** — "online" / "used" flag (exposed via `manu_elem(6)` as `& 0x1`).
+- **bit 1** — `alarmDev` flag. Observed to flip between `0x47` and `0x45` on an otherwise-identical wall switch, most likely tracking whether the device currently participates in an alarm group/scene.
+- **bits 2–7** — 6-bit firmware version (exposed via `manu_elem(7)` as `>> 2`). Every wall switch observed so far decodes to version 17 (`0b010001`).
+
+So `0x47 = online + alarmDev + v17` and `0x45 = online + no alarmDev + v17`. Not a persistent identity, not a role.
+
+The companion field the app labels `minjorType` (sic, with a `j`) is a **16-bit big-endian** value at bytes `[0xb..0xc]` of the raw Skytone blob — that is HA offsets `[15..16]` after the 4-byte Telink wrapping. This is almost certainly where the real device class lives: the app's `App.framework` binary carries a string table of device classes (switch, doubleswitch, dimmer G2/G3, socket, outlet, rgb_strip, cct_strip, white_strip, rgbw_strip, rgbtw_strip, cob_rgb_strip, sc/rct_* remote controls, air_conditioner, fan variants, fan_light, garage_one_door + sw/sl, garage_two_door, zcl, dali, rfd, "Dual Relay", "Garden") and a `getTypeStypeName2` function mapping `(type, stype)` tuples → user-facing names. Extracting the numeric table requires Dart-AOT-specific tooling and is out of scope for Stage 0.
 
 ### Conclusions
 
-- Treat byte[14] as an opaque `majorType` value with no known semantics
-- Drop the invented "gateway" terminology everywhere
-- Drop the `0x47` connection-preference heuristic — no empirical or documentary basis
-- Expose `majorType` / `minorType` in `diagnostics.py` (Stage 6) so future contributors with different hardware can report what they see
+- Byte[14] is a **packed flag byte**, not a device-class enum. Naming it `majorType` matches the Pixie app's own (misleading) label; internally, it decomposes into `online | alarmDev | version`.
+- Drop the invented "gateway" terminology everywhere.
+- Drop the `0x47` connection-preference heuristic — it was tracking the `alarmDev` flag, which is entirely unrelated to BLE reachability.
+- `0x47` vs `0x45` vs other values do not identify a different *kind* of device. A non-wall-switch Pixie device would likely show a different `minjorType` at bytes[15..16], not a different byte[14].
+- Stage 6 diagnostics should expose **both** the raw byte and its decoded fields (so the name collision with the Pixie app's naming is obvious to contributors), plus the raw `minjorType` word for any future device-class investigation.
 
 ---
 
@@ -287,7 +300,7 @@ Add any necessary `# type: ignore[...]` comments with specific error codes, not 
 
 **1. Remove `DEVICE_TYPE_GATEWAY` from `pigsydust/const.py`** — no code references it in the library, it was only imported by the integration.
 
-**2. Rename the advertisement-parser field access.** Wherever the library currently refers to byte[14] as `device_type` or similar, rename to `major_type` to match the Pixie app's own parser naming. Also expose `minor_type` if the adjacent byte is parsed. The naming matches what `bt_struct` disassembly revealed.
+**2. Rename the advertisement-parser field access.** Wherever the library currently refers to byte[14] as `device_type` or similar, rename to `major_type` — matching the Pixie app's own (misleading) label. Per the Stage 0 follow-up findings, byte[14] is actually a packed `online | alarmDev | version` flag byte, but keeping the app's terminology makes cross-referencing disassembly easier for future contributors. Also expose `minor_type` as a 16-bit big-endian integer from bytes[15..16] — the app's `minjorType`, strongest candidate for the real device-class code.
 
 **3. Expose raw manufacturer advert bytes on `DeviceStatus`** (needed for Stage 6 diagnostics):
 
@@ -785,7 +798,17 @@ async def async_get_config_entry_diagnostics(
                 "address": addr,
                 "is_on": status.is_on,
                 "mac": status.mac,
-                "major_type": getattr(status, "major_type", None),
+                # Byte[14] of the raw manuf-data blob. The Pixie app
+                # calls this "majorType" but it's actually a packed
+                # flag byte (bit 0 = online, bit 1 = alarmDev,
+                # bits 2-7 = firmware version). See Stage 0 findings.
+                "major_type_raw": getattr(status, "major_type", None),
+                "major_type_decoded": _decode_major_type(
+                    getattr(status, "major_type", None)
+                ),
+                # Bytes[15..16] of the raw blob (2-byte BE int). The
+                # app calls this "minjorType" (sic). Strongest candidate
+                # for the real device class code.
                 "minor_type": getattr(status, "minor_type", None),
                 "raw_manufacturer_data": (
                     status.raw_manufacturer_data.hex()
@@ -796,9 +819,20 @@ async def async_get_config_entry_diagnostics(
             for addr, status in (coordinator.data or {}).items()
         },
     }
+
+
+def _decode_major_type(value: int | None) -> dict | None:
+    """Decompose the packed majorType byte per Stage 0 disassembly."""
+    if value is None:
+        return None
+    return {
+        "online": bool(value & 0x01),
+        "alarm_dev": bool((value >> 1) & 0x01),
+        "version": value >> 2,
+    }
 ```
 
-**Library dependency:** `DeviceStatus` must expose `major_type`, `minor_type`, and `raw_manufacturer_data`. If the library can't easily provide raw bytes, fall back to just `major_type` / `minor_type` and a note in the diagnostic about needing a library version bump.
+**Library dependency:** `DeviceStatus` must expose `major_type` (byte[14], the packed flag byte), `minor_type` (bytes[15..16] as a 16-bit BE integer), and `raw_manufacturer_data` (the entire blob, for future device-class investigation once we crack the `(type, stype)` → class-name table). If the library can't easily provide the raw blob, fall back to just `major_type` / `minor_type` and a note in the diagnostic about needing a library version bump.
 
 ### 6b. Repairs platform
 
@@ -1193,7 +1227,7 @@ Required sections, in order:
 5. **Configuration** — where to find the home key in the Pixie app (Home Management → Share Home → KEY)
 6. **Data updates** — short paragraph explaining the push-primary, poll-fallback model
 7. **Supported functionality** — the entities and services provided
-8. **Known limitations** — no OTA updates, no device pairing, `majorType` semantics not fully understood, single-config-entry (one mesh per HA)
+8. **Known limitations** — no OTA updates, no device pairing, only wall switches verified (device-class table in bytes[15..16] not yet extracted), single-config-entry (one mesh per HA)
 9. **Troubleshooting** — common issues: BLE adapter permissions in Docker, invalid home key, entities unavailable
 10. **Removing the integration** — standard HA flow, no special cleanup
 11. **Unofficial / unaffiliated disclaimer** — keep at top where it already is
@@ -1370,5 +1404,6 @@ Stages 1 + 2 + 3 + 4 + 7a-7c. That produces a rebranded, modernized, tested inte
 
 ## Known open questions
 
-- **`majorType` semantics** — settled as unknown, treated as opaque. `0x45` is the common value observed on wall switches; `0x47` was observed once with unknown meaning. Exposed via diagnostics for future investigation.
+- **`majorType` semantics** — resolved (Stage 0 follow-up). Byte[14] is a packed `online | alarmDev | version` flag byte, not a device-class code. `0x47` vs `0x45` almost certainly reflects the `alarmDev` bit toggling based on whether the device currently participates in an alarm group/scene.
+- **`(type, stype)` → device-class table** — still open. The class code lives in bytes[15..16] (the app's `minjorType`) and the mapping table is embedded in the Pixie app's Dart AOT binary. Extracting it cleanly requires Dart-AOT-specific tooling. Until then, the integration only supports what it has been empirically verified against (wall switches).
 - **Slave switches** — PIXIE app treats all switches identically, so HA does too. No architectural branching needed. The term "slave" does not appear in any user-facing surface.
