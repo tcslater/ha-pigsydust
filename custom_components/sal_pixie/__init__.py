@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+import platform
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import voluptuous as vol
-from homeassistant.components.bluetooth import async_discovered_service_info
+from bleak import BleakClient
+from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
+from homeassistant.components.bluetooth import (
+    async_ble_device_from_address,
+    async_discovered_service_info,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
@@ -42,6 +47,7 @@ class SalPixieRuntimeData:
     """Runtime state attached to the config entry."""
 
     client: PixieClient
+    bleak_client: BleakClient
     coordinator: "PixieCoordinator"
     password: str
     mesh_mode: str = LED_OFF
@@ -76,29 +82,87 @@ def _find_best_pixie_device(hass: HomeAssistant) -> str | None:
     return best_address
 
 
+def _gateway_mac_for(hass: HomeAssistant, address: str) -> bytes | None:
+    """Return the 6-byte mesh MAC for the given BLE address.
+
+    On Linux/BlueZ the BLE address string is the MAC. On macOS/CoreBluetooth
+    the "address" is a CoreBluetooth UUID with no MAC component, so we have
+    to reconstruct the MAC from the manufacturer-data advertisement bytes
+    (bytes 2..5, in reverse order, into mac[5..2]).
+    """
+    if platform.system() != "Darwin":
+        parts = address.split(":")
+        if len(parts) == 6:
+            try:
+                return bytes(int(p, 16) for p in parts)
+            except ValueError:
+                return None
+        return None
+
+    for info in async_discovered_service_info(hass, connectable=True):
+        if info.address != address:
+            continue
+        data = (info.manufacturer_data or {}).get(0x0211)
+        if data is None or len(data) < 6:
+            return None
+        mac = bytearray(6)
+        mac[5] = data[2]
+        mac[4] = data[3]
+        mac[3] = data[4]
+        mac[2] = data[5]
+        return bytes(mac)
+    return None
+
+
 async def _connect_and_login(
     hass: HomeAssistant,
     password: str,
-    disconnect_callback: Callable[..., None] | None = None,
-) -> PixieClient:
-    """Connect to the best available Pixie device."""
+) -> tuple[PixieClient, BleakClient]:
+    """Resolve a BLEDevice via HA, open a connection through
+    bleak-retry-connector, and hand it to PixieClient for login.
+
+    Returns ``(pixie, bleak_client)``. The caller owns the ``bleak_client``
+    and must disconnect it on unload — PixieClient's ``disconnect()`` is a
+    no-op in this HA-managed mode.
+    """
     address = _find_best_pixie_device(hass)
     if address is None:
         raise ConfigEntryNotReady("No Pixie mesh device found via HA bluetooth")
 
-    client = PixieClient(address, disconnect_callback=disconnect_callback)
+    ble_device = async_ble_device_from_address(hass, address, connectable=True)
+    if ble_device is None:
+        raise ConfigEntryNotReady(
+            f"BLE device {address} not resolvable via HA bluetooth"
+        )
+
+    # Construct PixieClient up front so we can thread its _on_ble_disconnect
+    # into establish_connection as the disconnected callback.
+    pixie = PixieClient(address)
+    mac = _gateway_mac_for(hass, address)
+    if mac is not None:
+        pixie._gw_mac = mac
+
     try:
-        await client.connect()
+        bleak_client = await establish_connection(
+            BleakClientWithServiceCache,
+            ble_device,
+            name=ble_device.name or "SAL Pixie",
+            disconnected_callback=pixie._on_ble_disconnect,
+            use_services_cache=False,
+        )
     except Exception as err:
         raise ConfigEntryNotReady(f"Connection to {address} failed: {err}") from err
 
+    pixie.set_ble_client(bleak_client)
+
     try:
-        await client.login(MESH_NAME, password)
+        await pixie.login(MESH_NAME, password)
     except Exception as err:
-        await client.disconnect()
+        if bleak_client.is_connected:
+            await bleak_client.disconnect()
         raise ConfigEntryNotReady(f"Login failed: {err}") from err
 
-    return client
+    return pixie, bleak_client
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -117,7 +181,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: SalPixieConfigEntry) -> 
 
     password = entry.data[CONF_MESH_PASSWORD]
 
-    client = await _connect_and_login(hass, password)
+    client, bleak_client = await _connect_and_login(hass, password)
 
     coordinator = PixieCoordinator(hass, entry, client)
     client.set_disconnect_callback(coordinator._on_disconnect)
@@ -126,6 +190,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: SalPixieConfigEntry) -> 
 
     entry.runtime_data = SalPixieRuntimeData(
         client=client,
+        bleak_client=bleak_client,
         coordinator=coordinator,
         password=password,
     )
@@ -141,6 +206,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: SalPixieConfigEntry) ->
         runtime = entry.runtime_data
         await runtime.coordinator.async_shutdown()
         await runtime.client.disconnect()
+        if runtime.bleak_client.is_connected:
+            await runtime.bleak_client.disconnect()
     return unload_ok
 
 

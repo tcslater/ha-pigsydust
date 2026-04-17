@@ -134,18 +134,28 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
 
         password = self.config_entry.data[CONF_MESH_PASSWORD]
 
+        # Close the previous bleak_client before opening a new one.
+        runtime = self.config_entry.runtime_data
+        if runtime.bleak_client.is_connected:
+            try:
+                await runtime.bleak_client.disconnect()
+            except Exception:
+                _LOGGER.debug("Disconnecting stale bleak_client failed", exc_info=True)
+
         try:
-            new_client = await _connect_and_login(
-                self.hass, password, disconnect_callback=self._on_disconnect
-            )
-            self._unsubscribe()
-            self.client = new_client
-            self._unsubscribe = new_client.on_status_update(self._on_push_update)
-            self.config_entry.runtime_data.client = new_client
-            self._disconnected = False
-            _LOGGER.info("Reconnected successfully")
+            new_client, new_bleak_client = await _connect_and_login(self.hass, password)
         except Exception:
             _LOGGER.debug("Reconnect failed, will retry next poll", exc_info=True)
+            return
+
+        new_client.set_disconnect_callback(self._on_disconnect)
+        self._unsubscribe()
+        self.client = new_client
+        self._unsubscribe = new_client.on_status_update(self._on_push_update)
+        runtime.client = new_client
+        runtime.bleak_client = new_bleak_client
+        self._disconnected = False
+        _LOGGER.info("Reconnected successfully")
 
     async def reconnect_and_retry(self, action) -> None:
         """Reconnect then retry an action (for use by entity commands)."""
