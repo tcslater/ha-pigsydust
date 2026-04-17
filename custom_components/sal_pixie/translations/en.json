@@ -30,5 +30,37 @@
     "abort": {
       "already_configured": "Already configured"
     }
+  },
+  "services": {
+    "set_indicator": {
+      "name": "Set indicator LED",
+      "description": "Sets the indicator LED colour and brightness on all mesh switches.",
+      "fields": {
+        "mode": {
+          "name": "Mode",
+          "description": "Indicator colour (off, blue, orange, purple)."
+        },
+        "brightness": {
+          "name": "Brightness",
+          "description": "LED brightness (0-15). Only applies to orange and purple modes."
+        }
+      }
+    },
+    "all_on": {
+      "name": "Turn all switches on",
+      "description": "Sends an on command to every switch in the mesh."
+    },
+    "all_off": {
+      "name": "Turn all switches off",
+      "description": "Sends an off command to every switch in the mesh."
+    }
+  },
+  "exceptions": {
+    "mesh_unreachable": {
+      "message": "Could not reach the SAL Pixie mesh: {error}"
+    },
+    "command_failed": {
+      "message": "Command failed: {error}"
+    }
   }
 }

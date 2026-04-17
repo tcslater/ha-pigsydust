@@ -12,7 +12,8 @@ from homeassistant.components.bluetooth import async_discovered_service_info
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
+from homeassistant.helpers.typing import ConfigType
 from pigsydust import PixieClient
 
 from .const import CONF_MESH_PASSWORD, DOMAIN, MESH_NAME
@@ -100,6 +101,16 @@ async def _connect_and_login(
     return client
 
 
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Register integration-level services once at HA startup.
+
+    Registering here (rather than in async_setup_entry) means services
+    persist across entry reloads.
+    """
+    _register_services(hass)
+    return True
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: SalPixieConfigEntry) -> bool:
     """Set up SAL Pixie from a config entry."""
     from .coordinator import PixieCoordinator
@@ -119,8 +130,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: SalPixieConfigEntry) -> 
         password=password,
     )
 
-    _register_services(hass)
-
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
@@ -135,33 +144,38 @@ async def async_unload_entry(hass: HomeAssistant, entry: SalPixieConfigEntry) ->
     return unload_ok
 
 
-def _get_runtime(hass: HomeAssistant) -> SalPixieRuntimeData:
+def _get_runtime_data(hass: HomeAssistant) -> SalPixieRuntimeData:
     """Return the loaded runtime data, or raise if the integration isn't loaded."""
     entries = hass.config_entries.async_loaded_entries(DOMAIN)
     if not entries:
-        raise ValueError("SAL Pixie integration is not configured or not yet loaded")
+        raise HomeAssistantError(
+            "SAL Pixie integration is not configured or not yet loaded"
+        )
     return entries[0].runtime_data
 
 
 def _register_services(hass: HomeAssistant) -> None:
-    if hass.services.has_service(DOMAIN, SERVICE_SET_INDICATOR):
-        return
-
     async def handle_set_indicator(call: ServiceCall) -> None:
-        client = _get_runtime(hass).client
+        client = _get_runtime_data(hass).client
         mode = call.data[ATTR_MODE]
         brightness = call.data.get(ATTR_BRIGHTNESS, 15)
-
-        if mode == "off":
-            await client.reset_led()
-            await client.set_led_blue(0xFFFF, False)
-            await client.set_led_orange(0xFFFF, 0)
-        elif mode == "blue":
-            await client.set_led_blue(0xFFFF, True)
-        elif mode == "orange":
-            await client.set_led_orange(0xFFFF, brightness)
-        elif mode == "purple":
-            await client.set_led_purple(0xFFFF, brightness)
+        try:
+            if mode == "off":
+                await client.reset_led()
+                await client.set_led_blue(0xFFFF, False)
+                await client.set_led_orange(0xFFFF, 0)
+            elif mode == "blue":
+                await client.set_led_blue(0xFFFF, True)
+            elif mode == "orange":
+                await client.set_led_orange(0xFFFF, brightness)
+            elif mode == "purple":
+                await client.set_led_purple(0xFFFF, brightness)
+        except ConnectionError as err:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="mesh_unreachable",
+                translation_placeholders={"error": str(err)},
+            ) from err
 
     hass.services.async_register(
         DOMAIN,
@@ -178,10 +192,26 @@ def _register_services(hass: HomeAssistant) -> None:
     )
 
     async def handle_all_on(call: ServiceCall) -> None:
-        await _get_runtime(hass).client.turn_on(0xFFFF)
+        client = _get_runtime_data(hass).client
+        try:
+            await client.turn_on(0xFFFF)
+        except ConnectionError as err:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="command_failed",
+                translation_placeholders={"error": str(err)},
+            ) from err
 
     async def handle_all_off(call: ServiceCall) -> None:
-        await _get_runtime(hass).client.turn_off(0xFFFF)
+        client = _get_runtime_data(hass).client
+        try:
+            await client.turn_off(0xFFFF)
+        except ConnectionError as err:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="command_failed",
+                translation_placeholders={"error": str(err)},
+            ) from err
 
     hass.services.async_register(DOMAIN, SERVICE_ALL_ON, handle_all_on)
     hass.services.async_register(DOMAIN, SERVICE_ALL_OFF, handle_all_off)
