@@ -146,6 +146,16 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         # after we clear it below, causing a second reconnect cycle.
         runtime.client.set_disconnect_callback(lambda *_: None)
 
+        # Close the old PixieClient first: on Linux it owns a raw HCI
+        # socket reader and a heartbeat task, and without this they
+        # linger alongside the new session's reader, double-receiving
+        # every mesh packet. The old session key can't decrypt the new
+        # packets → TagMismatchError spam in the log.
+        try:
+            await runtime.client.disconnect()
+        except Exception:
+            _LOGGER.debug("Disconnecting stale PixieClient failed", exc_info=True)
+
         if runtime.bleak_client.is_connected:
             try:
                 await runtime.bleak_client.disconnect()
