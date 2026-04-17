@@ -778,20 +778,269 @@ Each item can be a separate commit.
 
 ## Stage 7 — Test Suite
 
-The single biggest task. Enables Bronze (basic tests) through Silver (95%+ coverage).
+The single biggest stage. Enables Bronze (basic tests), then Silver (95%+ coverage). Uses `pytest-homeassistant-custom-component` which mirrors the HA core test harness, so tests written here transplant cleanly into `tests/components/sal_pixie/` in Stage 11.
 
-### Infrastructure
-- `tests/` directory scaffold
-- `conftest.py` with fixtures (`mock_pixie_client`, `mock_bluetooth_discovery`, `init_integration`)
-- `requirements-test.txt`
-- CI workflow in `.github/workflows/test.yml`
+### Directory layout
 
-### Coverage
-- `test_config_flow.py` — all steps, all error paths, reauth, reconfigure
-- `test_init.py` — setup, unload, reload, auth failure
-- `test_coordinator.py` — push updates, poll fallback, reconnect, grace period, stale pruning
-- One file per platform
-- `test_diagnostics.py` using snapshot testing
+```
+tests/
+├── __init__.py
+├── conftest.py
+├── test_config_flow.py
+├── test_init.py
+├── test_coordinator.py
+├── test_diagnostics.py
+├── test_light.py
+├── test_select.py
+├── test_number.py
+├── test_button.py
+├── test_sensor.py
+└── snapshots/
+    └── test_diagnostics.ambr
+requirements-test.txt
+.github/workflows/test.yml
+```
+
+### Test dependencies (`requirements-test.txt`)
+
+```
+pytest
+pytest-asyncio
+pytest-homeassistant-custom-component
+syrupy
+```
+
+### Core fixtures (`tests/conftest.py`)
+
+```python
+"""Shared fixtures for SAL Pixie tests."""
+from __future__ import annotations
+
+from collections.abc import Generator
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+from custom_components.sal_pixie.const import CONF_MESH_PASSWORD, DOMAIN
+
+
+@pytest.fixture(autouse=True)
+def auto_enable_custom_integrations(enable_custom_integrations):
+    """Enable custom_components loading for all tests."""
+    yield
+
+
+@pytest.fixture
+def mock_config_entry() -> MockConfigEntry:
+    """A MockConfigEntry for the sal_pixie domain."""
+    return MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_MESH_PASSWORD: "1234"},
+        unique_id=DOMAIN,
+        title="SAL Pixie",
+    )
+
+
+@pytest.fixture
+def mock_device_statuses():
+    """Two switches: one on, one off."""
+    from pigsydust import DeviceStatus
+    return {
+        1: DeviceStatus(address=1, is_on=True, mac="AA:BB:CC:DD:EE:01"),
+        2: DeviceStatus(address=2, is_on=False, mac="AA:BB:CC:DD:EE:02"),
+    }
+
+
+@pytest.fixture
+def mock_pixie_client(mock_device_statuses) -> Generator[MagicMock, None, None]:
+    """Patch PixieClient everywhere it's imported in the integration."""
+    with patch(
+        "custom_components.sal_pixie.PixieClient", autospec=True,
+    ) as client_cls, patch(
+        "custom_components.sal_pixie.config_flow.PixieClient", new=client_cls,
+    ):
+        instance = client_cls.return_value
+        instance.connect = AsyncMock()
+        instance.disconnect = AsyncMock()
+        instance.login = AsyncMock()
+        instance.query_status = AsyncMock(return_value=mock_device_statuses)
+        instance.turn_on = AsyncMock()
+        instance.turn_off = AsyncMock()
+        instance.firmware_version = "1.0"
+        instance.hardware_version = "1.0"
+        instance.is_connected = True
+        instance.address = "AA:BB:CC:DD:EE:01"
+        instance.on_status_update = MagicMock(return_value=lambda: None)
+        instance.set_disconnect_callback = MagicMock()
+        yield instance
+
+
+@pytest.fixture
+def mock_bluetooth_discovery():
+    """Simulate HA's Bluetooth discovery finding a Pixie device."""
+    mock_info = MagicMock()
+    mock_info.address = "AA:BB:CC:DD:EE:01"
+    mock_info.name = "Pixie Switch"
+    mock_info.rssi = -50
+    mock_info.manufacturer_data = {0x0211: bytes(16)}
+
+    with patch(
+        "custom_components.sal_pixie.async_discovered_service_info",
+        return_value=[mock_info],
+    ), patch(
+        "custom_components.sal_pixie.config_flow.async_discovered_service_info",
+        return_value=[mock_info],
+    ):
+        yield mock_info
+
+
+@pytest.fixture
+async def init_integration(
+    hass, mock_config_entry, mock_pixie_client, mock_bluetooth_discovery,
+):
+    """A fully loaded integration ready for platform tests."""
+    mock_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+    return mock_config_entry
+```
+
+### Config flow tests (`tests/test_config_flow.py`)
+
+Coverage target: 100% of `config_flow.py`.
+
+Minimum cases:
+
+- `test_user_flow_happy_path` — user enters correct key, entry created with correct data
+- `test_user_flow_invalid_auth` — wrong key, form re-shows with `invalid_auth` error
+- `test_user_flow_cannot_connect` — no devices discovered, form shows `cannot_connect`
+- `test_user_flow_already_configured` — second attempt aborts with `already_configured`
+- `test_bluetooth_discovery_confirm` — discovery triggers confirm step, user completes
+- `test_bluetooth_discovery_already_configured` — discovery aborts if already configured
+- `test_reauth_flow_happy_path` — triggered by `ConfigEntryAuthFailed`, completes successfully, reloads entry
+- `test_reauth_flow_invalid_auth` — wrong key during reauth, form re-shows
+- `test_reconfigure_flow_happy_path` — user changes key, entry data updated, reload happens
+- `test_reconfigure_flow_invalid_auth` — wrong key, form re-shows
+
+Example:
+
+```python
+from homeassistant.config_entries import SOURCE_USER
+from homeassistant.data_entry_flow import FlowResultType
+
+async def test_user_flow_happy_path(hass, mock_pixie_client, mock_bluetooth_discovery):
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER},
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_MESH_PASSWORD: "1234"},
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"] == {CONF_MESH_PASSWORD: "1234"}
+    assert mock_pixie_client.login.await_count == 1
+```
+
+### Init tests (`tests/test_init.py`)
+
+- `test_setup_and_unload` — full lifecycle, verify `runtime_data` populated then cleaned up
+- `test_setup_no_device_found` — `ConfigEntryNotReady` raised when no discovery hits
+- `test_setup_login_failure` — `ConfigEntryNotReady` raised on bad credentials during initial setup
+- `test_coordinator_auth_failure_triggers_reauth` — coordinator raises `ConfigEntryAuthFailed`, reauth flow starts
+- `test_services_registered` — the three domain services are callable after setup
+- `test_service_raises_home_assistant_error_on_connection_failure` — service failures surface as `HomeAssistantError`
+
+### Coordinator tests (`tests/test_coordinator.py`)
+
+- `test_push_update_merges_into_data` — push callback updates `coordinator.data`
+- `test_poll_fallback_when_push_stale` — force stale timestamp, verify poll runs
+- `test_poll_skipped_when_push_fresh` — fresh push, poll is a no-op
+- `test_command_grace_period_suppresses_overwrite` — recent command, poll returns stale data but coordinator keeps commanded state
+- `test_reconnect_after_disconnect` — disconnect callback fires, next update attempts reconnect
+- `test_stale_device_pruned_from_registry` — device absent beyond threshold is removed
+- `test_new_device_fires_dispatcher_signal` — new mesh address triggers `SIGNAL_NEW_DEVICE`
+
+### Platform tests (one file each)
+
+Each file verifies: entities are created, state reflects coordinator data, commands reach the mocked client, availability tracks coordinator state.
+
+Example for `tests/test_light.py`:
+
+```python
+async def test_light_turn_on(hass, init_integration, mock_pixie_client):
+    await hass.services.async_call(
+        "light", "turn_on", {"entity_id": "light.pixie_switch_1"}, blocking=True,
+    )
+    mock_pixie_client.turn_on.assert_awaited_once_with(1)
+
+async def test_light_reflects_coordinator_data(hass, init_integration):
+    state = hass.states.get("light.pixie_switch_1")
+    assert state is not None
+    assert state.state == "on"
+
+async def test_light_unavailable_when_absent(hass, init_integration):
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    entry.runtime_data.coordinator.async_set_updated_data({})
+    await hass.async_block_till_done()
+    state = hass.states.get("light.pixie_switch_1")
+    assert state.state == "unavailable"
+```
+
+### Diagnostics tests (`tests/test_diagnostics.py`)
+
+Uses `syrupy` for snapshot comparison:
+
+```python
+from syrupy import SnapshotAssertion
+from pytest_homeassistant_custom_component.components.diagnostics import (
+    get_diagnostics_for_config_entry,
+)
+
+async def test_diagnostics(
+    hass, hass_client, init_integration, snapshot: SnapshotAssertion,
+):
+    result = await get_diagnostics_for_config_entry(
+        hass, hass_client, init_integration,
+    )
+    assert result == snapshot
+```
+
+First run records the snapshot; subsequent runs verify stability. The snapshot must show the mesh password redacted.
+
+### CI workflow (`.github/workflows/test.yml`)
+
+```yaml
+name: Tests
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -r requirements-test.txt
+      - run: pytest --cov=custom_components.sal_pixie --cov-report=xml
+      - uses: codecov/codecov-action@v4
+```
+
+### Acceptance criteria
+
+- `pytest` passes locally and in CI on Python 3.12 and 3.13
+- Coverage of `custom_components/sal_pixie/` ≥ 95% (Silver requirement)
+- Every branch of every `config_flow.py` function is exercised
+- No test talks to real BLE hardware — all I/O is mocked
 
 ## Stage 8 — Documentation
 
