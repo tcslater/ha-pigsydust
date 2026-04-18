@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -315,7 +316,9 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         self._disconnected = False
         _LOGGER.info("Reconnected successfully")
 
-    async def reconnect_and_retry(self, action) -> None:
+    async def reconnect_and_retry(
+        self, action: Callable[[PixieClient], Awaitable[Any]]
+    ) -> None:
         """Reconnect then retry an action (for use by entity commands)."""
         await self._try_reconnect()
         if self.client.is_connected:

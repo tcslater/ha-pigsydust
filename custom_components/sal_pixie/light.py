@@ -6,7 +6,10 @@ from collections.abc import Callable
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from homeassistant.components.light import ColorMode, LightEntity
+from homeassistant.components.light import (  # type: ignore[attr-defined]
+    ColorMode,
+    LightEntity,
+)
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect

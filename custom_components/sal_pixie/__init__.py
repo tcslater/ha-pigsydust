@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import platform
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import voluptuous as vol
 from bleak import BleakClient
@@ -220,7 +220,7 @@ def _get_runtime_data(hass: HomeAssistant) -> SalPixieRuntimeData:
         raise HomeAssistantError(
             "SAL Pixie integration is not configured or not yet loaded"
         )
-    return entries[0].runtime_data
+    return cast(SalPixieRuntimeData, entries[0].runtime_data)
 
 
 def _register_services(hass: HomeAssistant) -> None:
