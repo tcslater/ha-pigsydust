@@ -1,0 +1,13 @@
+{
+  "services": {
+    "set_indicator": {
+      "service": "mdi:led-on"
+    },
+    "all_on": {
+      "service": "mdi:lightbulb-group"
+    },
+    "all_off": {
+      "service": "mdi:lightbulb-group-off"
+    }
+  }
+}
