@@ -188,6 +188,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: SalPixieConfigEntry) -> 
     client.set_disconnect_callback(coordinator._on_disconnect)
     await coordinator.async_config_entry_first_refresh()
     coordinator._known_addresses = set(coordinator.data or {})
+    coordinator.seed_last_seen()
 
     entry.runtime_data = SalPixieRuntimeData(
         client=client,

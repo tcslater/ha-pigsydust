@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
-from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers import device_registry as dr, issue_registry as ir
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from pigsydust import DeviceStatus, PixieClient
@@ -33,6 +33,13 @@ _PUSH_FRESH_SECS = 120  # skip poll if push data arrived within this window
 # At SCAN_INTERVAL=5min this is ~25 minutes of sustained outage.
 _UNREACHABLE_THRESHOLD = 5
 _UNREACHABLE_ISSUE_ID = "mesh_unreachable"
+
+# A device absent from every poll/push for longer than this is considered
+# removed from the mesh and gets pruned from the device registry.
+# Uses time.monotonic, so the clock effectively restarts on HA reload —
+# a device that was already gone before a restart gets a fresh 24h grace
+# window to reappear before we prune it.
+_STALE_THRESHOLD = timedelta(hours=24)
 
 
 class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
@@ -62,10 +69,71 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         self._known_addresses: set[int] = set()
         self._consecutive_failures: int = 0
         self._issue_raised: bool = False
+        self._last_seen: dict[int, float] = {}
 
     def mark_commanded(self, address: int) -> None:
         """Mark a device as recently commanded (suppresses poll overwrite)."""
         self._command_timestamps[address] = time.monotonic()
+
+    def seed_last_seen(self) -> None:
+        """Seed ``_last_seen`` from the device registry.
+
+        Called once after the first refresh so that devices the registry
+        remembers from a previous HA session (but haven't responded yet
+        this session) start with a fresh 24h clock. Without this, a
+        device that's offline at startup would never enter ``_last_seen``
+        and could never be pruned.
+        """
+        now = time.monotonic()
+        registry = dr.async_get(self.hass)
+        entry_id = self.config_entry.entry_id
+        prefix = f"{entry_id}_"
+        for device in dr.async_entries_for_config_entry(registry, entry_id):
+            for domain, identifier in device.identifiers:
+                if domain != DOMAIN or not identifier.startswith(prefix):
+                    continue
+                suffix = identifier[len(prefix):]
+                # The mesh-level device uses "{entry_id}_mesh" — skip it.
+                if suffix == "mesh":
+                    continue
+                try:
+                    address = int(suffix)
+                except ValueError:
+                    continue
+                self._last_seen.setdefault(address, now)
+
+    def _prune_stale_devices(self, now: float, active: dict[int, DeviceStatus]) -> None:
+        """Remove device registry entries for addresses absent longer
+        than ``_STALE_THRESHOLD``.
+
+        Only runs after a successful poll (complete picture of the mesh).
+        An address present in ``active`` has just been stamped and cannot
+        be stale — the ``addr not in active`` guard is belt-and-braces.
+        """
+        threshold = now - _STALE_THRESHOLD.total_seconds()
+        stale = [
+            addr
+            for addr, last_seen in self._last_seen.items()
+            if last_seen < threshold and addr not in active
+        ]
+        if not stale:
+            return
+
+        registry = dr.async_get(self.hass)
+        for address in stale:
+            identifier = (DOMAIN, f"{self.config_entry.entry_id}_{address}")
+            device = registry.async_get_device(identifiers={identifier})
+            age = now - self._last_seen[address]
+            if device is not None:
+                _LOGGER.info(
+                    "Pruning stale device: address=%d (last seen %.0fh ago)",
+                    address, age / 3600,
+                )
+                registry.async_remove_device(device.id)
+            self._last_seen.pop(address, None)
+            self._known_addresses.discard(address)
+            if self.data is not None:
+                self.data.pop(address, None)
 
     def _note_failure(self) -> None:
         """Track a failed update; raise a repair issue once the threshold is hit."""
@@ -112,7 +180,9 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
             )
 
     def _on_push_update(self, status: DeviceStatus) -> None:
-        self._last_push = time.monotonic()
+        now = time.monotonic()
+        self._last_push = now
+        self._last_seen[status.address] = now
         if self.data is None:
             self.data = {}
         self.data[status.address] = status
@@ -178,6 +248,13 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
             _LOGGER.info("SAL Pixie mesh connection restored")
         self._note_success()
 
+        # Stamp every address that responded in this poll. Devices that
+        # didn't respond keep their old timestamp and will eventually
+        # cross the stale threshold. Pushes also stamp, so a heartbeat
+        # alone is enough to keep a device alive.
+        for addr in result:
+            self._last_seen[addr] = now
+
         # Merge with existing data. Skip poll results for recently
         # commanded devices (grace period prevents stale overwrite).
         if self.data:
@@ -186,8 +263,10 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
                 cmd_time = self._command_timestamps.get(addr, 0)
                 if now - cmd_time > _COMMAND_GRACE_SECS:
                     merged[addr] = status
+            self._prune_stale_devices(now, merged)
             self._check_new_devices(merged)
             return merged
+        self._prune_stale_devices(now, result)
         self._check_new_devices(result)
         return result
 

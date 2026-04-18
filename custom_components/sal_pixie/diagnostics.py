@@ -85,6 +85,7 @@ async def async_get_config_entry_diagnostics(
             ),
             "device_count": len(coordinator.data or {}),
             "known_addresses": sorted(coordinator._known_addresses),
+            "last_seen_count": len(coordinator._last_seen),
         },
         "devices": {
             str(addr): _device_dict(status)
