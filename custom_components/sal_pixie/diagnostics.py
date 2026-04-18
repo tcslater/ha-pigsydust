@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.bluetooth import async_discovered_service_info
@@ -18,20 +17,45 @@ if TYPE_CHECKING:
 TO_REDACT = {CONF_MESH_PASSWORD}
 
 
+def _decode_major_type(value: int | None) -> dict[str, Any] | None:
+    """Decompose the packed majorType byte per Stage 0 disassembly.
+
+    Bit layout of byte[14] of the manufacturer-data blob (and the same
+    packed byte echoed into status-notification payloads):
+    bit 0 = online, bit 1 = alarmDev, bits 2-7 = 6-bit firmware version.
+    """
+    if value is None:
+        return None
+    return {
+        "online": bool(value & 0x01),
+        "alarm_dev": bool((value >> 1) & 0x01),
+        "version": value >> 2,
+    }
+
+
 def _device_dict(status: Any) -> dict[str, Any]:
     """One row of the per-address table.
 
-    ``major_type`` is the packed byte from the status notification payload.
-    Its bit layout is not established (Stage 0 disassembly covered the
-    *advertisement* byte[14], which is a different byte from a different
-    packet); we expose the raw value for future investigation.
+    ``minor_type``, ``device_class``, and ``raw_manufacturer_data`` come
+    from the scan advertisement — the coordinator populates them by
+    correlating advert→status.  They may be ``None`` on devices whose
+    advert hasn't been seen yet in this process lifetime.
     """
     mac = getattr(status, "mac", None)
+    major_type = getattr(status, "major_type", None)
+    device_class = getattr(status, "device_class", None)
+    raw = getattr(status, "raw_manufacturer_data", None)
     return {
         "address": status.address,
         "is_on": status.is_on,
         "mac": mac.hex() if isinstance(mac, (bytes, bytearray)) else mac,
-        "major_type": getattr(status, "major_type", None),
+        "major_type_raw": major_type,
+        "major_type_decoded": _decode_major_type(major_type),
+        "minor_type": getattr(status, "minor_type", None),
+        "device_class": device_class.name.lower() if device_class else None,
+        "raw_manufacturer_data": (
+            raw.hex() if isinstance(raw, (bytes, bytearray)) else None
+        ),
         "routing_metric": getattr(status, "routing_metric", None),
     }
 
@@ -49,8 +73,11 @@ def _gateway_advert_dict(hass: HomeAssistant, address: str) -> dict[str, Any] | 
         return {
             "mac": advert.mac.hex(),
             "major_type_raw": advert.major_type,
-            "major_type_decoded": dataclasses.asdict(advert.major_type_flags),
+            "major_type_decoded": _decode_major_type(advert.major_type),
             "minor_type": advert.minor_type,
+            "device_class": (
+                advert.device_class.name.lower() if advert.device_class else None
+            ),
             "raw_manufacturer_data": advert.raw.hex(),
             "rssi": info.rssi,
         }

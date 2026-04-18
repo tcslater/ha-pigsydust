@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
@@ -10,6 +11,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.translation import async_get_translations
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from pigsydust import DeviceStatus, PixieClient
 
@@ -22,6 +24,29 @@ if TYPE_CHECKING:
 PARALLEL_UPDATES = 1
 
 
+def _derive_device_name(
+    address: int,
+    status: DeviceStatus,
+    class_label: Callable[[str], str | None] | None,
+) -> str:
+    """Pick a per-device name: localised class label → ``Pixie device 0xNNNN`` → legacy.
+
+    The legacy ``Pixie Switch {address}`` fallback is used when the
+    advert hasn't yet been correlated into the status (i.e. both
+    ``device_class`` and ``minor_type`` are unavailable).  That's the
+    common case until the coordinator gains advert correlation.
+    """
+    device_class = getattr(status, "device_class", None)
+    if device_class is not None and class_label is not None:
+        label = class_label(device_class.name.lower())
+        if label:
+            return f"{label} {address}"
+    minor_type = getattr(status, "minor_type", None)
+    if minor_type is not None:
+        return f"Pixie device {minor_type:#06x} {address}"
+    return f"Pixie Switch {address}"
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: "SalPixieConfigEntry",
@@ -32,8 +57,19 @@ async def async_setup_entry(
     coordinator = runtime.coordinator
     client = runtime.client
 
+    # Device-class translations are loaded once at setup; a device newly
+    # discovered later reuses the same dict.  Keys look like
+    # ``component.sal_pixie.device_class.switch``.
+    translations = await async_get_translations(
+        hass, hass.config.language, "device_class", {DOMAIN}
+    )
+    prefix = f"component.{DOMAIN}.device_class."
+
+    def _class_label(name_key: str) -> str | None:
+        return translations.get(f"{prefix}{name_key}")
+
     entities = [
-        PixieLight(coordinator, entry, address, status, client)
+        PixieLight(coordinator, entry, address, status, client, _class_label)
         for address, status in (coordinator.data or {}).items()
     ]
     async_add_entities(entities, update_before_add=False)
@@ -44,7 +80,7 @@ async def async_setup_entry(
         if status is None:
             return
         async_add_entities(
-            [PixieLight(coordinator, entry, address, status, client)],
+            [PixieLight(coordinator, entry, address, status, client, _class_label)],
             update_before_add=False,
         )
 
@@ -72,13 +108,14 @@ class PixieLight(CoordinatorEntity[PixieCoordinator], LightEntity):
         address: int,
         status: DeviceStatus,
         client: PixieClient,
+        class_label: "Callable[[str], str | None]" | None = None,
     ) -> None:
         super().__init__(coordinator)
         self._address = address
         self._attr_unique_id = f"{entry.entry_id}_{address}"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, f"{entry.entry_id}_{address}")},
-            name=f"Pixie Switch {address}",
+            name=_derive_device_name(address, status, class_label),
             manufacturer="SAL",
             model="Pixie",
             sw_version=client.firmware_version,
