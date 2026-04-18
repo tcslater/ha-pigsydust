@@ -30,7 +30,7 @@ async def async_setup_entry(
     runtime = entry.runtime_data
     coordinator = runtime.coordinator
 
-    entities: list[SensorEntity] = [PixieGatewaySensor(entry, coordinator)]
+    entities: list[SensorEntity] = [PixieConnectedDeviceSensor(entry, coordinator)]
     for address in (coordinator.data or {}):
         entities.append(PixieRoutingMetric(coordinator, entry, address))
 
@@ -85,12 +85,18 @@ class PixieRoutingMetric(CoordinatorEntity[PixieCoordinator], SensorEntity):
         return status.routing_metric
 
 
-class PixieGatewaySensor(CoordinatorEntity[PixieCoordinator], SensorEntity):
-    """Shows which mesh device HA is currently connected to."""
+class PixieConnectedDeviceSensor(CoordinatorEntity[PixieCoordinator], SensorEntity):
+    """The mesh switch HA is currently talking to over BLE.
+
+    Any Pixie switch can act as the radio entry point — the integration
+    picks whichever one has the best RSSI at setup time. This sensor
+    reports which one that is right now, which is useful when diagnosing
+    range or reconnect issues.
+    """
 
     has_entity_name = True
-    _attr_name = "Gateway"
-    _attr_icon = "mdi:router-wireless"
+    _attr_name = "Connected device"
+    _attr_icon = "mdi:bluetooth-connect"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(
@@ -99,7 +105,7 @@ class PixieGatewaySensor(CoordinatorEntity[PixieCoordinator], SensorEntity):
         coordinator: PixieCoordinator,
     ) -> None:
         super().__init__(coordinator)
-        self._attr_unique_id = f"{entry.entry_id}_mesh_gateway"
+        self._attr_unique_id = f"{entry.entry_id}_mesh_connected_device"
         self._attr_device_info = MESH_DEVICE_INFO(entry)
 
     @property
