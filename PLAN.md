@@ -46,12 +46,12 @@ Several stages require coordinated changes across two repositories:
 |-------|----------------|----------------|
 | 0 | Investigation script | — |
 | 1 | Rename to `sal_pixie` | — |
-| 2 | Drop `DEVICE_TYPE_GATEWAY` usage, drop RSSI heuristic, typed runtime data | Remove `DEVICE_TYPE_GATEWAY`, rename parser access to `major_type`/`minor_type`, add `py.typed` marker, bump to 0.2.0 |
+| 2 | Drop `DEVICE_TYPE_GATEWAY` usage, drop RSSI heuristic, typed runtime data | Remove `DEVICE_TYPE_GATEWAY`, rename parser access to `major_type`/`minor_type`, add `DeviceClass` enum + `(type, stype) → DeviceClass` lookup, migrate the device-type extraction tooling from `ha-pigsydust/scripts/`, add `py.typed` marker, bump to 0.2.0 |
 | 2b | *Conditional.* If Phase A spike succeeds: resolve `BLEDevice` via HA, drop standalone path | *Conditional.* If Phase A succeeds: accept `BLEDevice`, use `bleak_retry_connector` |
 | 3 | Service exception wrapping, translations (incl. `HomeAssistantError` translation keys) | — |
 | 4 | Reauth + reconfigure flows | — |
 | 5 | Availability logging | — |
-| 6 | Diagnostics platform, repairs, icons | `DeviceStatus` must expose `major_type`, `minor_type`, raw manufacturer advert bytes |
+| 6 | Diagnostics platform, repairs, icons, `device_class` translations in `strings.json` | `DeviceStatus` must expose `major_type`, `minor_type`, `device_class` (resolved enum member), raw manufacturer advert bytes |
 | 7 | Integration tests | Library tests (if not already adequate) |
 | 8 | Expanded README | README update for PyPI landing page |
 | 9 | `quality_scale.yaml` | — |
@@ -101,15 +101,24 @@ Deeper analysis of `_BTDataHandle_manu2string`, `_BTDataHandle_manu_elem`, and `
 
 So `0x47 = online + alarmDev + v17` and `0x45 = online + no alarmDev + v17`. Not a persistent identity, not a role.
 
-The companion field the app labels `minjorType` (sic, with a `j`) is a **16-bit big-endian** value at bytes `[0xb..0xc]` of the raw Skytone blob — that is HA offsets `[15..16]` after the 4-byte Telink wrapping. This is almost certainly where the real device class lives: the app's `App.framework` binary carries a string table of device classes (switch, doubleswitch, dimmer G2/G3, socket, outlet, rgb_strip, cct_strip, white_strip, rgbw_strip, rgbtw_strip, cob_rgb_strip, sc/rct_* remote controls, air_conditioner, fan variants, fan_light, garage_one_door + sw/sl, garage_two_door, zcl, dali, rfd, "Dual Relay", "Garden") and a `getTypeStypeName2` function mapping `(type, stype)` tuples → user-facing names. Extracting the numeric table requires Dart-AOT-specific tooling and is out of scope for Stage 0.
+The companion field the app labels `minjorType` (sic, with a `j`) is a **16-bit big-endian** value at bytes `[0xb..0xc]` of the raw Skytone blob — that is HA offsets `[15..16]` after the 4-byte Telink wrapping. This *is* the device class.
+
+### Follow-up findings from Dart AOT extraction
+
+The full `(type, stype) → DeviceType` table has now been extracted from `libapp.so` (SAL PIXIE Android v2.15.2375) using [blutter](https://github.com/worawit/blutter):
+
+- `pixie_sdk.dart::getTypeStype()` is a switch statement over an 82-value `DeviceType` enum that returns `{type: <int>, stype: <int>}`.
+- The 16-bit BE value at HA offsets `[15..16]` equals `(type << 8) | stype`. For wall switches (`SWITCH`): `(44, 22)` → `0x2c16` (decimal 11286). Verified against the bit layout that `bt_struct.framework`'s `_BTDataHandle_dataParse` (fun=0x1b) reveals.
+- Indices that take the default branch in `getTypeStype()` (`UNKNOW`, `PCP5`, `RFD2_SCAN`, `ACF_*`, `CAP*`, `MTW*`, `MRC`, `DIAL`, `STC`, `SIC`, `SFI_*`, `DV02`, `SONOS`) route through `_getTypeStypeP3rd()` — third-party fallback. Their numeric encoding is constructed at runtime; covering them needs an extension to the extractor.
+- The renderable table lives at `scripts/devicetype_table.txt` and the regenerator at `scripts/extract_devicetype_table.py`. **Both will migrate to `pigsydust-py` as part of Stage 2** so that any consumer of the library — not just HA — can identify Pixie hardware.
 
 ### Conclusions
 
 - Byte[14] is a **packed flag byte**, not a device-class enum. Naming it `majorType` matches the Pixie app's own (misleading) label; internally, it decomposes into `online | alarmDev | version`.
 - Drop the invented "gateway" terminology everywhere.
 - Drop the `0x47` connection-preference heuristic — it was tracking the `alarmDev` flag, which is entirely unrelated to BLE reachability.
-- `0x47` vs `0x45` vs other values do not identify a different *kind* of device. A non-wall-switch Pixie device would likely show a different `minjorType` at bytes[15..16], not a different byte[14].
-- Stage 6 diagnostics should expose **both** the raw byte and its decoded fields (so the name collision with the Pixie app's naming is obvious to contributors), plus the raw `minjorType` word for any future device-class investigation.
+- `0x47` vs `0x45` vs other values do not identify a different *kind* of device. A non-wall-switch Pixie device shows a different value at bytes[15..16], not a different byte[14].
+- The library should ship a `DeviceClass` enum keyed on the BE16 value at bytes[15..16]. The integration converts the enum identifier into a localised display name via `strings.json` (HA's translation pipeline), keeping the library presentation-neutral.
 
 ---
 
@@ -311,15 +320,63 @@ class DeviceStatus:
     is_on: bool
     mac: str | None = None
     major_type: int = 0  # byte[14] of manufacturer advert
-    minor_type: int | None = None  # byte[15] if present
+    minor_type: int | None = None  # bytes[15..16] as 16-bit BE int
+    device_class: DeviceClass | None = None  # resolved from minor_type
     raw_manufacturer_data: bytes | None = None  # entire blob
 ```
 
-All new fields must have defaults so existing callers (including test fixtures that construct `DeviceStatus` positionally) don't break on the 0.2.0 bump.
+All new fields must have defaults so existing callers (including test fixtures that construct `DeviceStatus` positionally) don't break on the 0.2.0 bump. The same `device_class` field should also appear on `PixieAdvert` (the scan-result parser), populated by `DeviceClass.from_minor_type(minor_type)`.
+
+**3a. Ship the `DeviceClass` enum** in a new module `pigsydust/device_class.py`:
+
+```python
+from enum import IntEnum
+
+class DeviceClass(IntEnum):
+    """Pixie device class, encoded as the 16-bit BE int at advert bytes [15..16]."""
+    SWITCH = 0x2c16
+    TSWITCH = 0x2a18
+    TSWITCHG2 = 0x2a1a
+    DIMMER = 0x2e16
+    DIMMER_G2 = 0x2e18
+    DIMMER_G3 = 0x2e1a
+    BRIDGE = 0x0216
+    BRIDGE_G2 = 0x0204
+    STRIP_W = 0x3004
+    STRIP_RGB = 0x3604
+    STRIP2_RGBCCT = 0x3408
+    STRIP2_RGB = 0x3608
+    STRIP2_CCT = 0x3208
+    # ... 50+ more entries — see scripts/devicetype_table.txt for the full list
+    # ECL_AC, FCS, FCR, POL, SPO2/3, DRC, BSC, FAN_*, VFAN_*, BFAN_ONLY,
+    # RGB_X, IR12/IR36, SMR, RFD/RFD_CT/RFD2/RFD2_CT, DM10, DALI_DT6,
+    # GDC1/GDC1_SW/GDC1_SL/GDC1_W/GDC2/GDC1_M2*, RCT_W/RCT_CCT/RCT_RGB*,
+    # ZCL, ACF_VRV, ACF_DUCTED, SGB/SGB3/SGBX*, DELAY
+
+    @classmethod
+    def from_minor_type(cls, value: int | None) -> "DeviceClass | None":
+        """Look up the device class for a 16-bit minor_type value. None if unknown."""
+        if value is None:
+            return None
+        try:
+            return cls(value)
+        except ValueError:
+            return None
+```
+
+The library deliberately ships the enum identifier (`SWITCH`, `DIMMER_G3`, `STRIP2_RGBCCT`, ...) rather than human-readable names. Identifiers are stable opaque protocol keys; localised display strings ("Wall Switch", "Dimmer (Gen 3)", ...) live in the integration's `strings.json` so HA can translate them. CLI / non-HA consumers of `pigsydust-py` get the canonical identifier and can render it however they like.
+
+**3b. Migrate the lookup-table tooling** from `ha-pigsydust/scripts/` to `pigsydust-py/scripts/`:
+
+- `scripts/extract_devicetype_table.py` — the blutter-output parser that produces the (idx, enum_name, type, stype) table. Used to regenerate the enum when SAL ships a new app version.
+- `scripts/devicetype_table.txt` — the rendered table from the most-recent extraction. Committed for review.
+- Add a CONTRIBUTING (or README) note explaining how to bump the enum from a new APK release.
+
+The `ha-pigsydust` copies of those files should be deleted once the library has them — no need to maintain two copies.
 
 **4. Add `py.typed` marker file** to the package so downstream users benefit from the library's type hints.
 
-**5. Bump version to `0.2.0`** — breaking change due to removed constant.
+**5. Bump version to `0.2.0`** — breaking change due to removed constant. The new `DeviceClass` enum and the additional `DeviceStatus` / `PixieAdvert` fields are additive; they don't move the bump higher.
 
 **6. Release to PyPI** before updating the integration's `manifest.json` requirement.
 
@@ -807,9 +864,15 @@ async def async_get_config_entry_diagnostics(
                     getattr(status, "major_type", None)
                 ),
                 # Bytes[15..16] of the raw blob (2-byte BE int). The
-                # app calls this "minjorType" (sic). Strongest candidate
-                # for the real device class code.
+                # app calls this "minjorType" (sic). This is the device
+                # class code; the resolved DeviceClass identifier lives
+                # in `device_class` below.
                 "minor_type": getattr(status, "minor_type", None),
+                "device_class": (
+                    status.device_class.name.lower()
+                    if getattr(status, "device_class", None)
+                    else None
+                ),
                 "raw_manufacturer_data": (
                     status.raw_manufacturer_data.hex()
                     if getattr(status, "raw_manufacturer_data", None)
@@ -832,7 +895,36 @@ def _decode_major_type(value: int | None) -> dict | None:
     }
 ```
 
-**Library dependency:** `DeviceStatus` must expose `major_type` (byte[14], the packed flag byte), `minor_type` (bytes[15..16] as a 16-bit BE integer), and `raw_manufacturer_data` (the entire blob, for future device-class investigation once we crack the `(type, stype)` → class-name table). If the library can't easily provide the raw blob, fall back to just `major_type` / `minor_type` and a note in the diagnostic about needing a library version bump.
+The diagnostics emit the lowercased enum identifier (`"switch"`, `"dimmer_g3"`, ...). Unknown classes (`device_class is None` because the BE16 isn't in the enum) come through as `null` alongside the raw `minor_type` value, which is what users would report when asking us to add a new entry to the enum.
+
+**Library dependency:** `DeviceStatus` must expose `major_type` (byte[14], the packed flag byte), `minor_type` (bytes[15..16] as a 16-bit BE integer), `device_class` (a `DeviceClass` enum member resolved from `minor_type`, or `None` if unknown), and `raw_manufacturer_data` (the entire blob, kept for forensics on unknown classes).
+
+### 6a-i. Device-class translation strings
+
+The diagnostics surface emits enum identifiers; user-facing UI also needs them. Add a `device_class` block to `strings.json` (mirror to `translations/en.json`) with one entry per `DeviceClass` member — lowercased identifier as the key, the localised name as the value:
+
+```json
+"device_class": {
+  "switch": "Wall Switch",
+  "tswitch": "Touch Switch",
+  "tswitchg2": "Touch Switch (Gen 2)",
+  "dimmer": "Dimmer",
+  "dimmer_g2": "Dimmer (Gen 2)",
+  "dimmer_g3": "Dimmer (Gen 3)",
+  "bridge": "Bridge",
+  "strip_w": "White LED Strip",
+  "strip_rgb": "RGB LED Strip",
+  "strip2_rgbcct": "RGBCCT LED Strip (Gen 2)",
+  "fan_only": "Fan",
+  "fan_ct": "Fan with CCT Light",
+  "gdc1": "Garage Door Controller",
+  "rct_rgb": "RGB Remote Control",
+  "zcl": "ZCL Controller"
+  // ... mirror every DeviceClass member shipped in pigsydust-py 0.2.0
+}
+```
+
+Light entities can pull a friendlier device-name suffix from this lookup once the device class is known — fall back to `"Pixie device {minor_type:#06x}"` when unknown. This is purely a presentation layer; the protocol-level identification stays in the library.
 
 ### 6b. Repairs platform
 
