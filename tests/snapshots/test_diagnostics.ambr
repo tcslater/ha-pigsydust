@@ -1,0 +1,65 @@
+# serializer version: 1
+# name: test_diagnostics_snapshot
+  dict({
+    'connection': dict({
+      'address': 'AA:BB:CC:DD:EE:01',
+      'firmware_version': '1.0',
+      'gateway_advert': dict({
+        'mac': '0000aabbcc01',
+        'major_type_decoded': dict({
+          'alarm_dev': False,
+          'online': True,
+          'version': 17,
+        }),
+        'major_type_raw': 69,
+        'minor_type': 10,
+        'raw_manufacturer_data': '000001ccbbaa000000000000000045000a',
+        'rssi': -50,
+      }),
+      'hardware_version': '1.0',
+      'is_connected': True,
+      'mac': 'AA:BB:CC:DD:EE:01',
+    }),
+    'coordinator': dict({
+      'device_count': 2,
+      'known_addresses': list([
+        1,
+        2,
+      ]),
+      'last_seen_count': 2,
+      'update_interval_s': 300.0,
+    }),
+    'devices': dict({
+      '1': dict({
+        'address': 1,
+        'is_on': True,
+        'mac': '0000aabbcc01',
+        'major_type': 69,
+        'routing_metric': 0,
+      }),
+      '2': dict({
+        'address': 2,
+        'is_on': False,
+        'mac': '0000aabbcc02',
+        'major_type': 69,
+        'routing_metric': 0,
+      }),
+    }),
+    'entry': dict({
+      'data': dict({
+        'home_key': '**REDACTED**',
+      }),
+      'disabled_by': None,
+      'domain': 'sal_pixie',
+      'minor_version': 1,
+      'options': dict({
+      }),
+      'pref_disable_new_entities': False,
+      'pref_disable_polling': False,
+      'source': 'user',
+      'title': 'SAL Pixie',
+      'unique_id': 'sal_pixie',
+      'version': 1,
+    }),
+  })
+# ---
