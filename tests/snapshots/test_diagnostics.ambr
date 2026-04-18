@@ -5,6 +5,7 @@
       'address': 'AA:BB:CC:DD:EE:01',
       'firmware_version': '1.0',
       'gateway_advert': dict({
+        'device_class': None,
         'mac': '0000aabbcc01',
         'major_type_decoded': dict({
           'alarm_dev': False,
@@ -32,16 +33,32 @@
     'devices': dict({
       '1': dict({
         'address': 1,
+        'device_class': None,
         'is_on': True,
         'mac': '0000aabbcc01',
-        'major_type': 69,
+        'major_type_decoded': dict({
+          'alarm_dev': False,
+          'online': True,
+          'version': 17,
+        }),
+        'major_type_raw': 69,
+        'minor_type': None,
+        'raw_manufacturer_data': None,
         'routing_metric': 0,
       }),
       '2': dict({
         'address': 2,
+        'device_class': None,
         'is_on': False,
         'mac': '0000aabbcc02',
-        'major_type': 69,
+        'major_type_decoded': dict({
+          'alarm_dev': False,
+          'online': True,
+          'version': 17,
+        }),
+        'major_type_raw': 69,
+        'minor_type': None,
+        'raw_manufacturer_data': None,
         'routing_metric': 0,
       }),
     }),

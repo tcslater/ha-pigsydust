@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from homeassistant.core import HomeAssistant
+from pigsydust import DeviceClass, DeviceStatus
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from syrupy.assertion import SnapshotAssertion
 from syrupy.filters import props
@@ -27,11 +28,50 @@ async def test_diagnostics_includes_devices(
     hass: HomeAssistant,
     init_integration: MockConfigEntry,
 ) -> None:
-    """Per-address status rows appear under ``devices``."""
+    """Per-address status rows appear under ``devices``.
+
+    Also asserts presence of the Stage 6a-backfill fields (``minor_type``,
+    ``device_class``, ``raw_manufacturer_data``) — their values may be
+    ``None`` until the coordinator correlates advert→status, but the keys
+    must always be emitted so a users's diagnostics dump has a stable shape.
+    """
     result = await async_get_config_entry_diagnostics(hass, init_integration)
     assert set(result["devices"].keys()) == {"1", "2"}
     assert result["devices"]["1"]["is_on"] is True
     assert result["devices"]["2"]["is_on"] is False
+    for row in result["devices"].values():
+        assert "minor_type" in row
+        assert "device_class" in row
+        assert "raw_manufacturer_data" in row
+        assert "major_type_decoded" in row
+
+
+async def test_diagnostics_emits_device_class_when_populated(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_pixie_client: MagicMock,
+) -> None:
+    """A DeviceStatus with device_class set surfaces as the lowercased enum id."""
+    push_callback = mock_pixie_client.on_status_update.call_args.args[0]
+    push_callback(
+        DeviceStatus(
+            address=5,
+            is_on=True,
+            major_type=0x45,
+            mac=bytes([0, 0, 0xAA, 0xBB, 0xCC, 5]),
+            routing_metric=0,
+            minor_type=DeviceClass.SWITCH.value,
+            device_class=DeviceClass.SWITCH,
+            raw_manufacturer_data=b"\x00\x01\x02\x03",
+        )
+    )
+    await hass.async_block_till_done()
+
+    result = await async_get_config_entry_diagnostics(hass, init_integration)
+    row = result["devices"]["5"]
+    assert row["device_class"] == "switch"
+    assert row["minor_type"] == DeviceClass.SWITCH.value
+    assert row["raw_manufacturer_data"] == "00010203"
 
 
 async def test_diagnostics_includes_gateway_advert(
