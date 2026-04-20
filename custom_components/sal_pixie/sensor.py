@@ -11,7 +11,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DEVICE_INFO, MESH_DEVICE_INFO, SIGNAL_NEW_DEVICE
+from .const import DEVICE_INFO, DOMAIN, MESH_DEVICE_INFO, SIGNAL_NEW_DEVICE
 from .coordinator import PixieCoordinator
 
 if TYPE_CHECKING:
