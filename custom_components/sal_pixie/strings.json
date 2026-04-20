@@ -1,0 +1,181 @@
+{
+  "title": "SAL Pixie",
+  "config": {
+    "step": {
+      "user": {
+        "title": "SAL Pixie",
+        "description": "Enter your home key to connect to the mesh.",
+        "data": {
+          "home_key": "Home key"
+        },
+        "data_description": {
+          "home_key": "Found in the Pixie app under Home Management \u2192 Share Home (shown as \"KEY\")"
+        }
+      },
+      "bluetooth_confirm": {
+        "title": "SAL Pixie discovered",
+        "description": "SAL Pixie mesh found. Enter your home key to connect.",
+        "data": {
+          "home_key": "Home key"
+        },
+        "data_description": {
+          "home_key": "Found in the Pixie app under Home Management \u2192 Share Home (shown as \"KEY\")"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Reauthenticate SAL Pixie",
+        "description": "The stored home key is no longer working. Enter the current home key.",
+        "data": {
+          "home_key": "Home key"
+        },
+        "data_description": {
+          "home_key": "Found in the Pixie app under Home Management \u2192 Share Home (shown as \"KEY\")"
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigure SAL Pixie",
+        "description": "Enter the new home key for the mesh.",
+        "data": {
+          "home_key": "Home key"
+        },
+        "data_description": {
+          "home_key": "Found in the Pixie app under Home Management \u2192 Share Home (shown as \"KEY\")"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "No Pixie device found or connection failed",
+      "invalid_auth": "Invalid home key"
+    },
+    "abort": {
+      "already_configured": "Already configured",
+      "reauth_successful": "Reauthentication successful",
+      "reconfigure_successful": "Reconfiguration successful"
+    }
+  },
+  "services": {
+    "set_indicator": {
+      "name": "Set indicator LED",
+      "description": "Sets the indicator LED colour and brightness on all mesh switches.",
+      "fields": {
+        "mode": {
+          "name": "Mode",
+          "description": "Indicator colour (off, blue, orange, purple)."
+        },
+        "brightness": {
+          "name": "Brightness",
+          "description": "LED brightness (0-15). Only applies to orange and purple modes."
+        }
+      }
+    },
+    "all_on": {
+      "name": "Turn all switches on",
+      "description": "Sends an on command to every switch in the mesh."
+    },
+    "all_off": {
+      "name": "Turn all switches off",
+      "description": "Sends an off command to every switch in the mesh."
+    }
+  },
+  "exceptions": {
+    "mesh_unreachable": {
+      "message": "Could not reach the SAL Pixie mesh: {error}"
+    },
+    "command_failed": {
+      "message": "Command failed: {error}"
+    }
+  },
+  "issues": {
+    "mesh_unreachable": {
+      "title": "SAL Pixie mesh unreachable",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "SAL Pixie mesh unreachable",
+            "description": "Home Assistant hasn't been able to reach the SAL Pixie mesh for several update cycles. Check that the Bluetooth adapter is working and at least one Pixie switch is within range, then submit to retry."
+          }
+        }
+      }
+    }
+  },
+  "device_class": {
+    "sgbx0": "SGBX0",
+    "bridge_g2": "PIXIE Gateway (Gen 2)",
+    "pol": "PIXIE Portal (mesh extender)",
+    "bridge": "PIXIE Gateway",
+    "sgb": "SGB",
+    "acf_ducted": "ACF Ducted",
+    "spo3": "PIXIE Smart Powerpoint",
+    "acf_vrv": "ACF VRV",
+    "sgbx": "SGBX",
+    "sgbx2": "SGBX2",
+    "vfan_only": "Variable-speed fan",
+    "fan_only": "Fan",
+    "bfan_only": "Big Ass Fan",
+    "zcl": "Zone Controller",
+    "fan_only9": "9-speed fan",
+    "drc": "Dual Relay Controller",
+    "bsc": "Blind & Signal Controller",
+    "gdc1": "Gate & Door Control",
+    "gdc1_sw": "Gate & Door Control (SW)",
+    "gdc1_sl": "GDC1 SL",
+    "gdc1_w": "GDC1 W",
+    "gdc2": "GDC2",
+    "gdc1_m2": "GDC1 M2",
+    "gdc1_m2w": "GDC1 M2W",
+    "gdc1_m2l": "GDC1 M2L",
+    "dv02": "DV02",
+    "rfd": "RFD",
+    "rfd2_scan": "RFD2 Scan",
+    "tswitch": "PIXIE Touch Panel",
+    "tswitchg2": "PIXIE Touch Panel (Gen 2)",
+    "ecl_ac": "ECL AC",
+    "switch": "PIXIE Smart Switch",
+    "switch_g2": "PIXIE Smart Switch (Gen 2)",
+    "switch_g3": "PIXIE Smart Switch (Gen 3)",
+    "dimmer": "PIXIE Smart Dimmer",
+    "dimmer_g2": "PIXIE Smart Dimmer (Gen 2)",
+    "dimmer_g3": "PIXIE Smart Dimmer (Gen 3)",
+    "strip_w": "LED strip (white)",
+    "fcs": "LED strip controller (white)",
+    "sfi_8266": "SFI 8266",
+    "sfi_825x": "SFI 825X",
+    "dm10": "0-10V Dimmer",
+    "dali_dt6": "PIXIE DALI Broadcast Controller",
+    "rct_w": "RCT (white)",
+    "rfd2": "RFD2",
+    "strip2_cct": "LED strip (CCT, Gen 2)",
+    "rfd_ct": "RFD CT",
+    "rct_cct": "RCT (CCT)",
+    "rfd2_ct": "RFD2 CT",
+    "strip2_rgbcct": "LED strip (RGBCCT, Gen 2)",
+    "rct_rgbw": "RCT (RGBW)",
+    "strip_rgb": "LED strip (RGB)",
+    "fcr": "LED strip controller (RGB)",
+    "strip2_rgb": "LED strip (RGB, Gen 2)",
+    "rct_rgb": "RCT (RGB)",
+    "rgb_x": "RGB X",
+    "rct_rgbcct": "RCT (RGBCCT)",
+    "ir36": "IR36",
+    "ir12": "IR12",
+    "smr": "SMR",
+    "drs": "DRS",
+    "drsm2": "DRSM2",
+    "drsm3": "DRSM3",
+    "cap": "Multifunction Control",
+    "mtw": "Multi-way Switch",
+    "stc": "PIXIE Timer Control",
+    "mtw2_al": "MTW2 AL",
+    "mtw2_an": "MTW2 AN",
+    "mrc": "PIXIE Multifunction Remote Control",
+    "cap3": "Multifunction Control (Gen 3)",
+    "sgb3": "SGB3",
+    "sic": "SIC",
+    "dial": "PIXIE Rotary Control",
+    "vfan_ct": "Variable-speed fan (CCT)",
+    "fan_ct": "Fan (CCT)",
+    "fan_ct9": "9-speed fan (CCT)",
+    "sonos": "Sonos",
+    "acf_rs8": "PIXIE RS485 AC Controller"
+  }
+}
