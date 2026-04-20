@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -18,6 +19,17 @@ from custom_components.sal_pixie.coordinator import (
     _MISSES_BEFORE_OFFLINE,
     _PUSH_FRESH_SECS,
 )
+
+
+def _stale_last_seen(addresses) -> dict[int, float]:
+    """Produce a _last_seen dict that's guaranteed past the freshness window.
+
+    Using literal 0 is fragile: ``time.monotonic()`` is since-boot on Linux,
+    so on a fresh CI VM ``now`` can be below ``_PUSH_FRESH_SECS`` and ``0``
+    ends up *fresher* than the cutoff, skipping the poll.
+    """
+    ancient = time.monotonic() - _PUSH_FRESH_SECS - 1
+    return {addr: ancient for addr in addresses}
 
 
 def _make_status(address: int, is_on: bool) -> DeviceStatus:
@@ -91,7 +103,7 @@ async def test_poll_runs_when_push_stale(
     """query_status runs when any known device hasn't been seen recently."""
     coordinator = init_integration.runtime_data.coordinator
     # Age every known device past the freshness window.
-    coordinator._last_seen = {addr: 0 for addr in coordinator._known_addresses}
+    coordinator._last_seen = _stale_last_seen(coordinator._known_addresses)
     mock_pixie_client.query_status.reset_mock()
 
     await coordinator.async_refresh()
@@ -129,7 +141,7 @@ async def test_command_grace_period_preserves_local_state(
     """Recently-commanded addresses aren't overwritten by stale poll results."""
     coordinator = init_integration.runtime_data.coordinator
     coordinator.data[1] = _make_status(1, True)
-    coordinator._last_seen = {addr: 0 for addr in coordinator._known_addresses}
+    coordinator._last_seen = _stale_last_seen(coordinator._known_addresses)
 
     # Query returns the *old* (off) state for address 1 — the device
     # hasn't had time to reflect the command yet.
@@ -170,7 +182,7 @@ async def test_coordinator_login_error_raises_auth_failed(
 ) -> None:
     """LoginError during a poll → ConfigEntryAuthFailed → reauth starts."""
     coordinator = init_integration.runtime_data.coordinator
-    coordinator._last_seen = {addr: 0 for addr in coordinator._known_addresses}
+    coordinator._last_seen = _stale_last_seen(coordinator._known_addresses)
     mock_pixie_client.query_status.side_effect = LoginError("session died")
 
     await coordinator.async_refresh()
@@ -187,7 +199,7 @@ async def test_coordinator_connection_error_marks_failure(
 ) -> None:
     """ConnectionError during a poll increments the failure counter."""
     coordinator = init_integration.runtime_data.coordinator
-    coordinator._last_seen = {addr: 0 for addr in coordinator._known_addresses}
+    coordinator._last_seen = _stale_last_seen(coordinator._known_addresses)
     mock_pixie_client.query_status.side_effect = ConnectionError("gone")
 
     with patch.object(coordinator, "_try_reconnect"):
@@ -204,7 +216,7 @@ async def test_unreachable_issue_raised_after_threshold(
 ) -> None:
     """After 5 consecutive failures a mesh_unreachable repair issue appears."""
     coordinator = init_integration.runtime_data.coordinator
-    coordinator._last_seen = {addr: 0 for addr in coordinator._known_addresses}
+    coordinator._last_seen = _stale_last_seen(coordinator._known_addresses)
     mock_pixie_client.query_status.side_effect = ConnectionError("gone")
 
     with patch.object(coordinator, "_try_reconnect"):
@@ -223,7 +235,7 @@ async def test_unreachable_issue_cleared_on_recovery(
 ) -> None:
     """A successful poll after the issue was raised clears it."""
     coordinator = init_integration.runtime_data.coordinator
-    coordinator._last_seen = {addr: 0 for addr in coordinator._known_addresses}
+    coordinator._last_seen = _stale_last_seen(coordinator._known_addresses)
     mock_pixie_client.query_status.side_effect = ConnectionError("gone")
 
     with patch.object(coordinator, "_try_reconnect"):
@@ -309,7 +321,7 @@ async def test_poll_generic_exception_wraps_as_update_failed(
 ) -> None:
     """A non-Login/Connection exception from query_status → UpdateFailed."""
     coordinator = init_integration.runtime_data.coordinator
-    coordinator._last_seen = {addr: 0 for addr in coordinator._known_addresses}
+    coordinator._last_seen = _stale_last_seen(coordinator._known_addresses)
     mock_pixie_client.query_status.side_effect = RuntimeError("boom")
 
     await coordinator.async_refresh()
@@ -486,7 +498,7 @@ async def test_ping_fills_gap_for_missing_device(
 ) -> None:
     """Devices missing from the 0xDC burst get unicast-pinged and folded back."""
     coordinator = init_integration.runtime_data.coordinator
-    coordinator._last_seen = {addr: 0 for addr in coordinator._known_addresses}
+    coordinator._last_seen = _stale_last_seen(coordinator._known_addresses)
 
     # 0xDC burst returns only address 1; address 2 is missing.
     mock_pixie_client.query_status.return_value = {1: _make_status(1, True)}
@@ -508,7 +520,7 @@ async def test_ping_timeout_accrues_miss_count(
 ) -> None:
     """Missing-from-burst + ping-timeout increments the miss counter."""
     coordinator = init_integration.runtime_data.coordinator
-    coordinator._last_seen = {addr: 0 for addr in coordinator._known_addresses}
+    coordinator._last_seen = _stale_last_seen(coordinator._known_addresses)
 
     mock_pixie_client.query_status.return_value = {1: _make_status(1, True)}
     mock_pixie_client.ping_device.return_value = None  # timeout
@@ -532,7 +544,7 @@ async def test_device_dropped_after_threshold_misses(
 
     for _ in range(_MISSES_BEFORE_OFFLINE):
         # Force the poll path every iteration.
-        coordinator._last_seen = {addr: 0 for addr in coordinator._known_addresses}
+        coordinator._last_seen = _stale_last_seen(coordinator._known_addresses)
         await coordinator.async_refresh()
 
     assert coordinator._miss_counts[2] >= _MISSES_BEFORE_OFFLINE
@@ -567,7 +579,7 @@ async def test_ping_skipped_for_recently_commanded(
     on top of the ON/OFF command still being acknowledged.
     """
     coordinator = init_integration.runtime_data.coordinator
-    coordinator._last_seen = {addr: 0 for addr in coordinator._known_addresses}
+    coordinator._last_seen = _stale_last_seen(coordinator._known_addresses)
     coordinator.mark_commanded(2)
 
     mock_pixie_client.query_status.return_value = {1: _make_status(1, True)}
