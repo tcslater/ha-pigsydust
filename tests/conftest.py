@@ -41,14 +41,12 @@ def mock_device_statuses() -> dict[int, DeviceStatus]:
         1: DeviceStatus(
             address=1,
             is_on=True,
-            major_type=0x45,
             mac=bytes([0, 0, 0xAA, 0xBB, 0xCC, 0x01]),
             routing_metric=0,
         ),
         2: DeviceStatus(
             address=2,
             is_on=False,
-            major_type=0x45,
             mac=bytes([0, 0, 0xAA, 0xBB, 0xCC, 0x02]),
             routing_metric=0,
         ),
@@ -60,24 +58,28 @@ def mock_service_info() -> MagicMock:
     """A BluetoothServiceInfoBleak-shaped mock carrying Pixie manuf data.
 
     The manufacturer blob layout matters for ``parse_pixie_advert`` used by
-    diagnostics and by ``_gateway_mac_for`` on macOS — bytes 2..5 are the
-    low four MAC octets in reverse order, byte 14 is ``major_type``, and
-    bytes 15..16 are ``minor_type`` (16-bit big-endian).
+    diagnostics and by ``_gateway_mac_for`` on macOS: bytes 2..5 are the
+    low four MAC octets in reverse order, bytes 6..7 are ``type``/``stype``
+    (wire-halved), byte 8 is the packed status byte, byte 9 is the mesh
+    address, and bytes 11..14 are the network ID.
     """
     info = MagicMock()
     info.address = MOCK_ADDRESS
     info.name = "Pixie Switch"
     info.rssi = -50
     info.connectable = True
-    # 17 bytes: [0,0, 0x01,0xCC,0xBB,0xAA, 0,0,0,0, 0,0,0,0, 0x45, 0x00, 0x0A]
+    # 17 bytes: [0x11,0x02, 0x01,0xCC,0xBB,0xAA, 0x16,0x0C, 0x45, 0x01, 0x00,
+    #            0x1A,0xE7,0x1D,0x19, 0x00, 0x00]
     info.manufacturer_data = {
         0x0211: bytes([
-            0x00, 0x00,
+            0x11, 0x02,
             0x01, 0xCC, 0xBB, 0xAA,
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
+            0x16, 0x0C,
             0x45,
-            0x00, 0x0A,
+            0x01,
+            0x00,
+            0x1A, 0xE7, 0x1D, 0x19,
+            0x00, 0x00,
         ])
     }
     return info

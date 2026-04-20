@@ -5,7 +5,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from homeassistant.core import HomeAssistant
-from pigsydust import DeviceClass, DeviceStatus
+from pigsydust import DeviceStatus
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.sal_pixie.light import _derive_device_name
@@ -89,48 +89,37 @@ async def test_light_turn_on_reconnects_on_connection_error(
 
 def _status(
     address: int = 1,
-    minor_type: int | None = None,
-    device_class: DeviceClass | None = None,
+    type_: int | None = None,
+    stype: int | None = None,
 ) -> DeviceStatus:
     return DeviceStatus(
         address=address,
         is_on=True,
-        major_type=0x45,
         mac=bytes([0, 0, 0, 0, 0, address]),
         routing_metric=0,
-        minor_type=minor_type,
-        device_class=device_class,
+        type=type_,
+        stype=stype,
     )
 
 
-def test_derive_device_name_uses_class_label_when_available() -> None:
-    """device_class + resolvable translation → '{label} {address}'."""
-    labels = {"switch": "Wall Switch"}
-    name = _derive_device_name(
-        4, _status(address=4, device_class=DeviceClass.SWITCH), labels.get,
-    )
-    assert name == "Wall Switch 4"
+def test_derive_device_name_uses_device_class_when_known() -> None:
+    """Wire (0x16, 0x0C) resolves to SWITCH_G2 via the spec table."""
+    name = _derive_device_name(4, _status(address=4, type_=0x16, stype=0x0C))
+    assert name == "Pixie SWITCH_G2 4"
 
 
-def test_derive_device_name_falls_back_to_minor_type() -> None:
-    """Known minor_type but no translation → 'Pixie device 0xNNNN {address}'."""
-    name = _derive_device_name(
-        2, _status(address=2, minor_type=0x2c16), lambda _key: None,
-    )
-    assert name == "Pixie device 0x2c16 2"
+def test_derive_device_name_hex_fallback_for_unknown_class() -> None:
+    """Type+stype present but not in the table → hex-bytes device label."""
+    name = _derive_device_name(6, _status(address=6, type_=0xFF, stype=0xFE))
+    assert name == "Pixie device fffe 6"
 
 
 def test_derive_device_name_legacy_fallback() -> None:
     """Nothing correlated yet → legacy 'Pixie Switch {address}'."""
-    name = _derive_device_name(1, _status(address=1), None)
-    assert name == "Pixie Switch 1"
+    assert _derive_device_name(1, _status(address=1)) == "Pixie Switch 1"
 
 
-def test_derive_device_name_ignores_class_when_label_missing() -> None:
-    """device_class set but translation lookup returns None → try minor_type."""
-    name = _derive_device_name(
-        7,
-        _status(address=7, device_class=DeviceClass.SWITCH, minor_type=0x2c16),
-        lambda _key: None,
-    )
-    assert name == "Pixie device 0x2c16 7"
+def test_derive_device_name_partial_requires_both() -> None:
+    """type or stype alone still falls back to the legacy label."""
+    assert _derive_device_name(7, _status(address=7, type_=0x16)) == "Pixie Switch 7"
+    assert _derive_device_name(8, _status(address=8, stype=0x0C)) == "Pixie Switch 8"

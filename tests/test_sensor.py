@@ -28,7 +28,7 @@ async def test_routing_metric_reflects_status(
     push_callback = mock_pixie_client.on_status_update.call_args.args[0]
     push_callback(
         DeviceStatus(
-            address=1, is_on=True, major_type=0x45,
+            address=1, is_on=True,
             mac=bytes([0, 0, 0, 0, 0, 1]), routing_metric=42,
         )
     )

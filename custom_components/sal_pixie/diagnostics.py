@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.components.bluetooth import async_discovered_service_info
 from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.core import HomeAssistant
-from pigsydust import parse_pixie_advert
+from pigsydust import StatusByteFlags, parse_pixie_advert
 
 from .const import CONF_MESH_PASSWORD
 
@@ -17,53 +17,34 @@ if TYPE_CHECKING:
 TO_REDACT = {CONF_MESH_PASSWORD}
 
 
-def _decode_major_type(value: int | None) -> dict[str, Any] | None:
-    """Decompose the packed majorType byte per Stage 0 disassembly.
-
-    Bit layout of byte[14] of the manufacturer-data blob (and the same
-    packed byte echoed into status-notification payloads):
-    bit 0 = online, bit 1 = alarmDev, bits 2-7 = 6-bit firmware version.
-    """
-    if value is None:
+def _status_flags_dict(flags: StatusByteFlags | None) -> dict[str, Any] | None:
+    if flags is None:
         return None
     return {
-        "online": bool(value & 0x01),
-        "alarm_dev": bool((value >> 1) & 0x01),
-        "version": value >> 2,
+        "online": flags.online,
+        "alarm_dev": flags.alarm_dev,
+        "version": flags.version,
     }
 
 
 def _device_dict(status: Any) -> dict[str, Any]:
-    """One row of the per-address table.
-
-    ``minor_type``, ``device_class``, and ``raw_manufacturer_data`` come
-    from the scan advertisement — the coordinator populates them by
-    correlating advert→status.  They may be ``None`` on devices whose
-    advert hasn't been seen yet in this process lifetime.
-    """
+    """One row of the per-address diagnostics table."""
     mac = getattr(status, "mac", None)
-    major_type = getattr(status, "major_type", None)
-    device_class = getattr(status, "device_class", None)
-    raw = getattr(status, "raw_manufacturer_data", None)
     return {
         "address": status.address,
         "is_on": status.is_on,
         "mac": mac.hex() if isinstance(mac, (bytes, bytearray)) else mac,
-        "major_type_raw": major_type,
-        "major_type_decoded": _decode_major_type(major_type),
-        "minor_type": getattr(status, "minor_type", None),
-        "device_class": device_class.name.lower() if device_class else None,
-        "raw_manufacturer_data": (
-            raw.hex() if isinstance(raw, (bytes, bytearray)) else None
-        ),
+        "type": getattr(status, "type", None),
+        "stype": getattr(status, "stype", None),
+        "device_class_name": getattr(status, "device_class_name", None),
+        "status_byte": getattr(status, "status_byte", None),
+        "status_flags": _status_flags_dict(getattr(status, "status_flags", None)),
         "routing_metric": getattr(status, "routing_metric", None),
     }
 
 
 def _gateway_advert_dict(hass: HomeAssistant, address: str) -> dict[str, Any] | None:
-    """Look up the BLE manufacturer-data advert for the connected gateway
-    and return its decoded fields.
-    """
+    """Decoded fields of the connected gateway's BLE advert."""
     for info in async_discovered_service_info(hass, connectable=True):
         if info.address != address:
             continue
@@ -72,12 +53,13 @@ def _gateway_advert_dict(hass: HomeAssistant, address: str) -> dict[str, Any] | 
             return None
         return {
             "mac": advert.mac.hex(),
-            "major_type_raw": advert.major_type,
-            "major_type_decoded": _decode_major_type(advert.major_type),
-            "minor_type": advert.minor_type,
-            "device_class": (
-                advert.device_class.name.lower() if advert.device_class else None
-            ),
+            "type": advert.type,
+            "stype": advert.stype,
+            "device_class_name": advert.device_class_name,
+            "status_byte": advert.status_byte,
+            "status_flags": _status_flags_dict(advert.status_flags),
+            "mesh_address": advert.mesh_address,
+            "network_id": advert.network_id.hex(),
             "raw_manufacturer_data": advert.raw.hex(),
             "rssi": info.rssi,
         }
