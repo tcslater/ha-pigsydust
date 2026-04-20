@@ -3,3 +3,6 @@ pytest-asyncio
 pytest-homeassistant-custom-component
 syrupy
 pigsydust==0.4.0
+# Transitive deps of homeassistant.components.usb (pulled in by bluetooth)
+pyserial
+aiousbwatcher;sys_platform=='linux'
