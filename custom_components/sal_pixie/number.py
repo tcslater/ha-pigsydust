@@ -7,12 +7,11 @@ from typing import TYPE_CHECKING
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, MESH_DEVICE_INFO, SIGNAL_NEW_DEVICE
+from .const import DEVICE_INFO, MESH_DEVICE_INFO, SIGNAL_NEW_DEVICE
 from .coordinator import PixieCoordinator
 from .select import LED_ORANGE, LED_PURPLE
 
@@ -108,8 +107,8 @@ class PixieIndicatorBrightness(CoordinatorEntity[PixieCoordinator], NumberEntity
         self._runtime = runtime
         self._address = address
         self._attr_unique_id = f"{entry.entry_id}_{address}_indicator_brightness"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, f"{entry.entry_id}_{address}")},
+        self._attr_device_info = DEVICE_INFO(
+            entry, address, coordinator.data.get(address) if coordinator.data else None,
         )
 
     @property

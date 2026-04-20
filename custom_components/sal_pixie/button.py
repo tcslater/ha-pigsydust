@@ -9,13 +9,12 @@ from typing import TYPE_CHECKING
 from homeassistant.components.button import ButtonEntity
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from pigsydust import PixieClient
 
-from .const import DOMAIN, MESH_DEVICE_INFO, SIGNAL_NEW_DEVICE
+from .const import DEVICE_INFO, MESH_DEVICE_INFO, SIGNAL_NEW_DEVICE
 from .coordinator import PixieCoordinator
 
 if TYPE_CHECKING:
@@ -113,8 +112,8 @@ class PixieIdentifyButton(CoordinatorEntity[PixieCoordinator], ButtonEntity):
         super().__init__(coordinator)
         self._address = address
         self._attr_unique_id = f"{entry.entry_id}_{address}_identify"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, f"{entry.entry_id}_{address}")},
+        self._attr_device_info = DEVICE_INFO(
+            entry, address, coordinator.data.get(address) if coordinator.data else None,
         )
         self._active = False
         self._reset_handle: asyncio.TimerHandle | None = None
