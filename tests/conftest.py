@@ -116,6 +116,7 @@ def mock_pixie_client(
     instance.disconnect = AsyncMock()
     instance.login = AsyncMock()
     instance.query_status = AsyncMock(return_value=mock_device_statuses)
+    instance.ping_device = AsyncMock(return_value=None)
     instance.turn_on = AsyncMock()
     instance.turn_off = AsyncMock()
     instance.set_led_blue = AsyncMock()

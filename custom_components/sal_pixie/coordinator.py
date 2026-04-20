@@ -42,6 +42,19 @@ _UNREACHABLE_ISSUE_ID = "mesh_unreachable"
 # window to reappear before we prune it.
 _STALE_THRESHOLD = timedelta(hours=24)
 
+# Per-device availability knobs. When a known device is missing from a
+# broadcast poll, unicast-ping it to distinguish "lost in mesh noise" from
+# "actually offline". Keep the timeout tight — pings run sequentially per
+# missing device, so N_missing * _PING_TIMEOUT bounds the extra poll time.
+_PING_TIMEOUT = 1.0
+# Misses accrued before dropping a device from the merged data (flipping
+# its light entity to unavailable). At SCAN_INTERVAL=5min this is ~15min
+# of silence before a device ghosts out of the UI — long enough that a
+# transient BLE glitch doesn't flap availability, short enough that a
+# genuinely-dead device doesn't linger with stale state for 24h until
+# registry prune.
+_MISSES_BEFORE_OFFLINE = 3
+
 
 class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
     """Coordinate data updates from a Pixie mesh."""
@@ -71,6 +84,7 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         self._consecutive_failures: int = 0
         self._issue_raised: bool = False
         self._last_seen: dict[int, float] = {}
+        self._miss_counts: dict[int, int] = {}
 
     def mark_commanded(self, address: int) -> None:
         """Mark a device as recently commanded (suppresses poll overwrite)."""
@@ -184,6 +198,7 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         now = time.monotonic()
         self._last_push = now
         self._last_seen[status.address] = now
+        self._miss_counts.pop(status.address, None)
         if self.data is None:
             self.data = {}
         self.data[status.address] = status
@@ -193,10 +208,11 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
     def _on_disconnect(self, *_args: Any) -> None:
         """Called when the BLE connection drops."""
         self._disconnected = True
-        # Push empty data immediately so every CoordinatorEntity.available
-        # flips to False within this tick, instead of waiting for the next
-        # failed poll to set last_update_success=False.
-        self.async_set_updated_data({})
+        # Flip last_update_success=False so every CoordinatorEntity.available
+        # returns False within this tick. Keep self.data intact — a transient
+        # BLE glitch shouldn't erase last-known state for quiet devices that
+        # may not reappear in the reconnect's initial login burst.
+        self.async_set_update_error(UpdateFailed("BLE disconnected"))
         # Without this, the reconnect only fires on the next scheduled
         # poll (up to SCAN_INTERVAL = 5 minutes away). Requesting a
         # refresh now collapses that window to a few seconds.
@@ -214,15 +230,25 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
                 self._note_failure()
                 raise UpdateFailed("BLE disconnected — reconnecting")
 
-        # Skip poll if push data is fresh — avoid unnecessary BLE traffic.
-        # The set_utc burst during login populates data before the first
-        # coordinator poll, so this also handles the initial refresh.
+        # Skip poll only if *every* known device has pushed within the
+        # freshness window. A chatty subset isn't evidence the quiet ones
+        # are still alive — if we skip based on the chatty ones' pushes,
+        # quiet devices never get refreshed and eventually fall off
+        # (_STALE_THRESHOLD prunes them from the registry after 24h).
         now = time.monotonic()
-        data_count = len(self.data) if self.data else 0
-        push_age = now - self._last_push if self._last_push else -1
-        _LOGGER.debug("Poll check: data=%d devices, push_age=%.1fs", data_count, push_age)
-        if self.data and self._last_push and (now - self._last_push) < _PUSH_FRESH_SECS:
-            _LOGGER.debug("Skipping poll — have %d devices from push", len(self.data))
+        stale_cutoff = now - _PUSH_FRESH_SECS
+        all_fresh = bool(self.data) and bool(self._known_addresses) and all(
+            self._last_seen.get(addr, 0) > stale_cutoff
+            for addr in self._known_addresses
+        )
+        _LOGGER.debug(
+            "Poll check: data=%d devices, known=%d, all_fresh=%s",
+            len(self.data) if self.data else 0,
+            len(self._known_addresses),
+            all_fresh,
+        )
+        if all_fresh:
+            _LOGGER.debug("Skipping poll — all %d known devices fresh", len(self._known_addresses))
             return self.data
 
         try:
@@ -249,6 +275,20 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
             _LOGGER.info("SAL Pixie mesh connection restored")
         self._note_success()
 
+        # Fill gaps with unicast pings. A device missing from the 0xDC
+        # burst may have just lost its slot in the broadcast response —
+        # a unicast 0xDA → 0xDB round-trip distinguishes that from a
+        # genuinely offline device. Missing addresses that also fail to
+        # ping accrue a miss count and eventually drop out of merged
+        # data (flipping the light entity to unavailable).
+        missing = [
+            addr for addr in self._known_addresses
+            if addr not in result
+            and now - self._command_timestamps.get(addr, 0) > _COMMAND_GRACE_SECS
+        ]
+        if missing:
+            await self._fill_gaps_with_ping(missing, result)
+
         # Stamp every address that responded in this poll. Devices that
         # didn't respond keep their old timestamp and will eventually
         # cross the stale threshold. Pushes also stamp, so a heartbeat
@@ -264,12 +304,46 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
                 cmd_time = self._command_timestamps.get(addr, 0)
                 if now - cmd_time > _COMMAND_GRACE_SECS:
                     merged[addr] = status
-            self._prune_stale_devices(now, merged)
-            self._check_new_devices(merged)
-            return merged
-        self._prune_stale_devices(now, result)
-        self._check_new_devices(result)
-        return result
+        else:
+            merged = dict(result)
+
+        # Drop addresses that have exceeded the miss threshold. Keep the
+        # entry in _last_seen (stale-prune still runs on the 24h clock),
+        # but evicting from merged makes PixieLight.available return
+        # False on the next coordinator tick.
+        for addr, misses in list(self._miss_counts.items()):
+            if misses >= _MISSES_BEFORE_OFFLINE:
+                merged.pop(addr, None)
+
+        self._prune_stale_devices(now, merged)
+        self._check_new_devices(merged)
+        return merged
+
+    async def _fill_gaps_with_ping(
+        self, missing: list[int], result: dict[int, DeviceStatus]
+    ) -> None:
+        """Unicast-ping each *missing* address and fold replies into *result*.
+
+        Mutates *result* in place with any replies; updates ``_miss_counts``
+        for timeouts. Pings run sequentially because the BLE command
+        channel is single-threaded — parallel sends would interleave
+        writes on the same characteristic and the stack doesn't queue.
+        """
+        for addr in missing:
+            try:
+                status = await self.client.ping_device(addr, timeout=_PING_TIMEOUT)
+            except Exception:
+                _LOGGER.debug("ping_device(%d) raised", addr, exc_info=True)
+                status = None
+            if status is not None:
+                result[addr] = status
+                self._miss_counts.pop(addr, None)
+            else:
+                self._miss_counts[addr] = self._miss_counts.get(addr, 0) + 1
+                _LOGGER.debug(
+                    "ping_device(%d) timed out (miss %d/%d)",
+                    addr, self._miss_counts[addr], _MISSES_BEFORE_OFFLINE,
+                )
 
     async def _try_reconnect(self) -> None:
         """Attempt to reconnect to the best available Pixie device."""

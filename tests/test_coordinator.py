@@ -14,6 +14,10 @@ from pigsydust.crypto import LoginError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.sal_pixie.const import DOMAIN, SIGNAL_NEW_DEVICE
+from custom_components.sal_pixie.coordinator import (
+    _MISSES_BEFORE_OFFLINE,
+    _PUSH_FRESH_SECS,
+)
 
 
 def _make_status(address: int, is_on: bool) -> DeviceStatus:
@@ -84,11 +88,34 @@ async def test_poll_runs_when_push_stale(
     init_integration: MockConfigEntry,
     mock_pixie_client: MagicMock,
 ) -> None:
-    """query_status runs when push is stale (or never happened)."""
+    """query_status runs when any known device hasn't been seen recently."""
     coordinator = init_integration.runtime_data.coordinator
-    coordinator._last_push = 0  # mark push as never-happened
+    # Age every known device past the freshness window.
+    coordinator._last_seen = {addr: 0 for addr in coordinator._known_addresses}
     mock_pixie_client.query_status.reset_mock()
 
+    await coordinator.async_refresh()
+
+    mock_pixie_client.query_status.assert_awaited()
+
+
+async def test_poll_runs_when_any_known_device_is_stale(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_pixie_client: MagicMock,
+) -> None:
+    """A chatty subset must not suppress polls that refresh quiet devices."""
+    import time as time_module
+
+    coordinator = init_integration.runtime_data.coordinator
+    mock_pixie_client.query_status.reset_mock()
+
+    # Pretend address 2 hasn't been seen in ages (well past _PUSH_FRESH_SECS).
+    coordinator._last_seen[2] = time_module.monotonic() - 3600
+
+    # Address 1 is chatty — push just arrived.
+    push_callback = mock_pixie_client.on_status_update.call_args.args[0]
+    push_callback(_make_status(1, True))
     await coordinator.async_refresh()
 
     mock_pixie_client.query_status.assert_awaited()
@@ -102,7 +129,7 @@ async def test_command_grace_period_preserves_local_state(
     """Recently-commanded addresses aren't overwritten by stale poll results."""
     coordinator = init_integration.runtime_data.coordinator
     coordinator.data[1] = _make_status(1, True)
-    coordinator._last_push = 0
+    coordinator._last_seen = {addr: 0 for addr in coordinator._known_addresses}
 
     # Query returns the *old* (off) state for address 1 — the device
     # hasn't had time to reflect the command yet.
@@ -118,12 +145,10 @@ async def test_disconnect_marks_entities_unavailable(
     init_integration: MockConfigEntry,
     mock_pixie_client: MagicMock,
 ) -> None:
-    """The disconnect callback pushes {} so CoordinatorEntity.available flips."""
+    """The disconnect callback flips last_update_success so entities go unavailable."""
     coordinator = init_integration.runtime_data.coordinator
+    data_before = dict(coordinator.data)
 
-    # Block the auto-reconnect the disconnect callback kicks off, so the
-    # {}-push state is observable. (In production the reconnect rehydrates
-    # data within one poll cycle — fine, but racey to assert against here.)
     with patch.object(coordinator, "_try_reconnect"):
         mock_pixie_client.is_connected = False
         coordinator._on_disconnect()
@@ -132,6 +157,10 @@ async def test_disconnect_marks_entities_unavailable(
     state = hass.states.get("light.pixie_switch_1")
     assert state is not None
     assert state.state == "unavailable"
+    # Last-known data is preserved — a BLE glitch shouldn't erase history
+    # for quiet devices that may miss the reconnect's login burst.
+    assert coordinator.data == data_before
+    assert coordinator.last_update_success is False
 
 
 async def test_coordinator_login_error_raises_auth_failed(
@@ -141,7 +170,7 @@ async def test_coordinator_login_error_raises_auth_failed(
 ) -> None:
     """LoginError during a poll → ConfigEntryAuthFailed → reauth starts."""
     coordinator = init_integration.runtime_data.coordinator
-    coordinator._last_push = 0
+    coordinator._last_seen = {addr: 0 for addr in coordinator._known_addresses}
     mock_pixie_client.query_status.side_effect = LoginError("session died")
 
     await coordinator.async_refresh()
@@ -158,7 +187,7 @@ async def test_coordinator_connection_error_marks_failure(
 ) -> None:
     """ConnectionError during a poll increments the failure counter."""
     coordinator = init_integration.runtime_data.coordinator
-    coordinator._last_push = 0
+    coordinator._last_seen = {addr: 0 for addr in coordinator._known_addresses}
     mock_pixie_client.query_status.side_effect = ConnectionError("gone")
 
     with patch.object(coordinator, "_try_reconnect"):
@@ -175,7 +204,7 @@ async def test_unreachable_issue_raised_after_threshold(
 ) -> None:
     """After 5 consecutive failures a mesh_unreachable repair issue appears."""
     coordinator = init_integration.runtime_data.coordinator
-    coordinator._last_push = 0
+    coordinator._last_seen = {addr: 0 for addr in coordinator._known_addresses}
     mock_pixie_client.query_status.side_effect = ConnectionError("gone")
 
     with patch.object(coordinator, "_try_reconnect"):
@@ -194,7 +223,7 @@ async def test_unreachable_issue_cleared_on_recovery(
 ) -> None:
     """A successful poll after the issue was raised clears it."""
     coordinator = init_integration.runtime_data.coordinator
-    coordinator._last_push = 0
+    coordinator._last_seen = {addr: 0 for addr in coordinator._known_addresses}
     mock_pixie_client.query_status.side_effect = ConnectionError("gone")
 
     with patch.object(coordinator, "_try_reconnect"):
@@ -232,7 +261,10 @@ async def test_stale_device_pruned_from_registry(
     # stale-gate.
     now = time_module.monotonic()
     coordinator._last_seen[2] = now - (25 * 3600)
-    coordinator._last_push = 0
+    # Force the poll: age every OTHER known address too.
+    for addr in list(coordinator._known_addresses):
+        if addr != 2:
+            coordinator._last_seen[addr] = now - _PUSH_FRESH_SECS - 1
     coordinator.data.pop(2, None)
     mock_pixie_client.query_status.return_value = {1: _make_status(1, True)}
 
@@ -277,7 +309,7 @@ async def test_poll_generic_exception_wraps_as_update_failed(
 ) -> None:
     """A non-Login/Connection exception from query_status → UpdateFailed."""
     coordinator = init_integration.runtime_data.coordinator
-    coordinator._last_push = 0
+    coordinator._last_seen = {addr: 0 for addr in coordinator._known_addresses}
     mock_pixie_client.query_status.side_effect = RuntimeError("boom")
 
     await coordinator.async_refresh()
@@ -440,6 +472,106 @@ async def test_reconnect_and_retry_raises_when_still_disconnected(
     with patch.object(coordinator, "_try_reconnect", _fake_reconnect):
         with pytest.raises(ConnectionError):
             await coordinator.reconnect_and_retry(_action)
+
+
+async def test_ping_fills_gap_for_missing_device(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_pixie_client: MagicMock,
+) -> None:
+    """Devices missing from the 0xDC burst get unicast-pinged and folded back."""
+    coordinator = init_integration.runtime_data.coordinator
+    coordinator._last_seen = {addr: 0 for addr in coordinator._known_addresses}
+
+    # 0xDC burst returns only address 1; address 2 is missing.
+    mock_pixie_client.query_status.return_value = {1: _make_status(1, True)}
+    mock_pixie_client.ping_device.return_value = _make_status(2, False)
+
+    await coordinator.async_refresh()
+
+    mock_pixie_client.ping_device.assert_awaited_with(2, timeout=pytest.approx(1.0))
+    # Both addresses end up in data: 1 from the burst, 2 from the gap-fill ping.
+    assert 1 in coordinator.data
+    assert 2 in coordinator.data
+    assert coordinator._miss_counts.get(2, 0) == 0
+
+
+async def test_ping_timeout_accrues_miss_count(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_pixie_client: MagicMock,
+) -> None:
+    """Missing-from-burst + ping-timeout increments the miss counter."""
+    coordinator = init_integration.runtime_data.coordinator
+    coordinator._last_seen = {addr: 0 for addr in coordinator._known_addresses}
+
+    mock_pixie_client.query_status.return_value = {1: _make_status(1, True)}
+    mock_pixie_client.ping_device.return_value = None  # timeout
+
+    await coordinator.async_refresh()
+
+    assert coordinator._miss_counts[2] == 1
+    # Below threshold: address 2 retains last-known data (not yet evicted).
+    assert 2 in coordinator.data
+
+
+async def test_device_dropped_after_threshold_misses(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_pixie_client: MagicMock,
+) -> None:
+    """After _MISSES_BEFORE_OFFLINE consecutive ping failures, the device drops."""
+    coordinator = init_integration.runtime_data.coordinator
+    mock_pixie_client.query_status.return_value = {1: _make_status(1, True)}
+    mock_pixie_client.ping_device.return_value = None
+
+    for _ in range(_MISSES_BEFORE_OFFLINE):
+        # Force the poll path every iteration.
+        coordinator._last_seen = {addr: 0 for addr in coordinator._known_addresses}
+        await coordinator.async_refresh()
+
+    assert coordinator._miss_counts[2] >= _MISSES_BEFORE_OFFLINE
+    assert 2 not in coordinator.data
+
+
+async def test_push_clears_miss_count(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_pixie_client: MagicMock,
+) -> None:
+    """A push update for an address resets its ping-miss counter."""
+    coordinator = init_integration.runtime_data.coordinator
+    coordinator._miss_counts[2] = 2
+
+    push_callback = mock_pixie_client.on_status_update.call_args.args[0]
+    push_callback(_make_status(2, True))
+    await hass.async_block_till_done()
+
+    assert 2 not in coordinator._miss_counts
+
+
+async def test_ping_skipped_for_recently_commanded(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_pixie_client: MagicMock,
+) -> None:
+    """A freshly-commanded device absent from the burst is not ping-probed.
+
+    The device's response is likely still propagating and would arrive as
+    a push; pinging now both wastes airtime and could stack a 0xDA command
+    on top of the ON/OFF command still being acknowledged.
+    """
+    coordinator = init_integration.runtime_data.coordinator
+    coordinator._last_seen = {addr: 0 for addr in coordinator._known_addresses}
+    coordinator.mark_commanded(2)
+
+    mock_pixie_client.query_status.return_value = {1: _make_status(1, True)}
+
+    await coordinator.async_refresh()
+
+    # ping_device must NOT have been called with address 2.
+    for call in mock_pixie_client.ping_device.await_args_list:
+        assert call.args[0] != 2
 
 
 async def test_coordinator_shutdown_unsubscribes(
