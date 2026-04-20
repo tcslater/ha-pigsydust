@@ -90,14 +90,16 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         """Mark a device as recently commanded (suppresses poll overwrite)."""
         self._command_timestamps[address] = time.monotonic()
 
-    def seed_last_seen(self) -> None:
-        """Seed ``_last_seen`` from the device registry.
+    def seed_from_registry(self) -> None:
+        """Seed ``_last_seen`` and ``_known_addresses`` from the device registry.
 
-        Called once after the first refresh so that devices the registry
-        remembers from a previous HA session (but haven't responded yet
-        this session) start with a fresh 24h clock. Without this, a
-        device that's offline at startup would never enter ``_last_seen``
-        and could never be pruned.
+        Called once before the first refresh so that devices the registry
+        remembers from a previous HA session start with a fresh 24h clock
+        *and* are eligible for unicast-ping gap-fill if they don't respond
+        to the initial 0xDC broadcast. Without the ``_known_addresses``
+        seed, a device offline at startup would stay unavailable until it
+        happened to push a status itself — quiet devices could sit dark
+        for the full 24h prune window.
         """
         now = time.monotonic()
         registry = dr.async_get(self.hass)
@@ -116,6 +118,7 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
                 except ValueError:
                     continue
                 self._last_seen.setdefault(address, now)
+                self._known_addresses.add(address)
 
     def _prune_stale_devices(self, now: float, active: dict[int, DeviceStatus]) -> None:
         """Remove device registry entries for addresses absent longer

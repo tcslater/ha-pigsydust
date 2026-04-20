@@ -274,7 +274,7 @@ async def test_stale_device_pruned_from_registry(
     assert registry.async_get_device(identifiers={identifier}) is None
 
 
-async def test_seed_last_seen_populates_from_registry(
+async def test_seed_from_registry_populates_last_seen(
     hass: HomeAssistant,
     init_integration: MockConfigEntry,
 ) -> None:
@@ -318,11 +318,11 @@ async def test_poll_generic_exception_wraps_as_update_failed(
     assert coordinator._consecutive_failures == 1
 
 
-async def test_seed_last_seen_reads_registry(
+async def test_seed_from_registry_reads_registry(
     hass: HomeAssistant,
     init_integration: MockConfigEntry,
 ) -> None:
-    """seed_last_seen walks the device registry and stamps non-mesh addresses."""
+    """seed_from_registry walks the device registry and stamps non-mesh addresses."""
     coordinator = init_integration.runtime_data.coordinator
     registry = dr.async_get(hass)
     entry_id = init_integration.entry_id
@@ -341,14 +341,19 @@ async def test_seed_last_seen_reads_registry(
     )
 
     coordinator._last_seen.clear()
-    coordinator.seed_last_seen()
+    coordinator._known_addresses.clear()
+    coordinator.seed_from_registry()
 
     # Existing per-device registry entries (addresses 1 & 2) get stamped.
     assert 1 in coordinator._last_seen
     assert 2 in coordinator._last_seen
+    # And added to _known_addresses so gap-fill ping can probe them.
+    assert 1 in coordinator._known_addresses
+    assert 2 in coordinator._known_addresses
     # The "mesh" identifier and the non-integer suffix must NOT leak in.
     assert "mesh" not in coordinator._last_seen
     assert "notanint" not in coordinator._last_seen
+    assert "mesh" not in coordinator._known_addresses
 
 
 async def test_try_reconnect_success_swaps_clients(

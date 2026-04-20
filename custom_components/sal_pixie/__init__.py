@@ -186,9 +186,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: SalPixieConfigEntry) -> 
 
     coordinator = PixieCoordinator(hass, entry, client)
     client.set_disconnect_callback(coordinator._on_disconnect)
+    # Seed BEFORE first refresh so registry-known-but-broadcast-absent
+    # devices enter _fill_gaps_with_ping's missing list and get unicast
+    # probed during the very first poll, rather than waiting for the
+    # next scheduled cycle (up to SCAN_INTERVAL away).
+    coordinator.seed_from_registry()
     await coordinator.async_config_entry_first_refresh()
-    coordinator._known_addresses = set(coordinator.data or {})
-    coordinator.seed_last_seen()
 
     entry.runtime_data = SalPixieRuntimeData(
         client=client,
