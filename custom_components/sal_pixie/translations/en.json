@@ -164,7 +164,7 @@
     "drsm3": "DRSM3",
     "cap": "Multifunction Control",
     "mtw": "Multi-way Switch",
-    "stc": "STC",
+    "stc": "PIXIE Timer Control",
     "mtw2_al": "MTW2 AL",
     "mtw2_an": "MTW2 AN",
     "mrc": "PIXIE Multifunction Remote Control",
@@ -176,6 +176,6 @@
     "fan_ct": "Fan (CCT)",
     "fan_ct9": "9-speed fan (CCT)",
     "sonos": "Sonos",
-    "acf_rs8": "ACF RS8"
+    "acf_rs8": "PIXIE RS485 AC Controller"
   }
 }
