@@ -96,7 +96,7 @@ def _status(
         address=address,
         is_on=True,
         mac=bytes([0, 0, 0, 0, 0, address]),
-        routing_metric=0,
+        sno=0,
         type=type_,
         stype=stype,
     )

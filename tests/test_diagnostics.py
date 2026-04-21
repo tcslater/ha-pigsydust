@@ -59,7 +59,7 @@ async def test_diagnostics_emits_status_fields_when_populated(
             address=5,
             is_on=True,
             mac=bytes([0, 0, 0xAA, 0xBB, 0xCC, 5]),
-            routing_metric=0,
+            sno=0,
             type=0x16,
             stype=0x0C,
             status_byte=0x47,

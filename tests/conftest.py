@@ -42,13 +42,13 @@ def mock_device_statuses() -> dict[int, DeviceStatus]:
             address=1,
             is_on=True,
             mac=bytes([0, 0, 0xAA, 0xBB, 0xCC, 0x01]),
-            routing_metric=0,
+            sno=0,
         ),
         2: DeviceStatus(
             address=2,
             is_on=False,
             mac=bytes([0, 0, 0xAA, 0xBB, 0xCC, 0x02]),
-            routing_metric=0,
+            sno=0,
         ),
     }
 

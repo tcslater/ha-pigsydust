@@ -81,7 +81,7 @@ class PixieRoutingMetric(CoordinatorEntity[PixieCoordinator], SensorEntity):
         status = self.coordinator.data.get(self._address)
         if status is None:
             return None
-        return status.routing_metric
+        return status.sno
 
 
 class PixieConnectedDeviceSensor(CoordinatorEntity[PixieCoordinator], SensorEntity):

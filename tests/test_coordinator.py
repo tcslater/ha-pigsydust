@@ -37,7 +37,7 @@ def _make_status(address: int, is_on: bool) -> DeviceStatus:
         address=address,
         is_on=is_on,
         mac=bytes([0, 0, 0, 0, 0, address]),
-        routing_metric=0,
+        sno=0,
     )
 
 

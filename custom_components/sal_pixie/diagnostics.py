@@ -39,7 +39,9 @@ def _device_dict(status: Any) -> dict[str, Any]:
         "device_class_name": getattr(status, "device_class_name", None),
         "status_byte": getattr(status, "status_byte", None),
         "status_flags": _status_flags_dict(getattr(status, "status_flags", None)),
-        "routing_metric": getattr(status, "routing_metric", None),
+        "sno": getattr(status, "sno", None),
+        "ttc": getattr(status, "ttc", None),
+        "hops": getattr(status, "hops", None),
     }
 
 
