@@ -18,18 +18,18 @@ async def test_sensor_entities_created(
     assert hass.states.get("sensor.pixie_switch_2_mesh_signal") is not None
 
 
-async def test_routing_metric_reflects_status(
+async def test_mesh_sno_reflects_status(
     hass: HomeAssistant,
     init_integration: MockConfigEntry,
     mock_pixie_client: MagicMock,
 ) -> None:
-    """Pushing a status with a non-zero routing_metric surfaces in the sensor."""
+    """Pushing a status with a non-zero sno surfaces in the sensor."""
     coordinator = init_integration.runtime_data.coordinator
     push_callback = mock_pixie_client.on_status_update.call_args.args[0]
     push_callback(
         DeviceStatus(
             address=1, is_on=True,
-            mac=bytes([0, 0, 0, 0, 0, 1]), routing_metric=42,
+            mac=bytes([0, 0, 0, 0, 0, 1]), sno=42,
         )
     )
     await hass.async_block_till_done()

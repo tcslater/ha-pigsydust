@@ -37,7 +37,7 @@ def _make_status(address: int, is_on: bool) -> DeviceStatus:
         address=address,
         is_on=is_on,
         mac=bytes([0, 0, 0, 0, 0, address]),
-        routing_metric=0,
+        sno=0,
     )
 
 
@@ -150,6 +150,33 @@ async def test_command_grace_period_preserves_local_state(
 
     await coordinator.async_refresh()
     assert coordinator.data[1].is_on is True
+
+
+async def test_poll_preserves_is_on_when_reply_has_none(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_pixie_client: MagicMock,
+) -> None:
+    """A 0xDB ping-fill reply (is_on=None) must not overwrite a known on/off."""
+    coordinator = init_integration.runtime_data.coordinator
+    coordinator.data[1] = _make_status(1, True)
+    coordinator._last_seen = _stale_last_seen(coordinator._known_addresses)
+
+    mock_pixie_client.query_status.return_value = {
+        1: DeviceStatus(
+            address=1,
+            is_on=None,
+            mac=bytes([0, 0, 0, 0, 0, 1]),
+            sno=0,
+            ttc=5,
+            hops=1,
+        )
+    }
+
+    await coordinator.async_refresh()
+    assert coordinator.data[1].is_on is True
+    assert coordinator.data[1].ttc == 5
+    assert coordinator.data[1].hops == 1
 
 
 async def test_disconnect_marks_entities_unavailable(

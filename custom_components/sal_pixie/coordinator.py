@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -204,6 +205,9 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         self._miss_counts.pop(status.address, None)
         if self.data is None:
             self.data = {}
+        existing = self.data.get(status.address)
+        if existing is not None and status.is_on is None and existing.is_on is not None:
+            status = replace(status, is_on=existing.is_on)
         self.data[status.address] = status
         self._check_new_devices(self.data)
         self.async_set_updated_data(self.data)
@@ -301,11 +305,20 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
 
         # Merge with existing data. Skip poll results for recently
         # commanded devices (grace period prevents stale overwrite).
+        # Preserve is_on when a 0xDB ping-fill reply lacks on/off state
+        # (0xDB carries mesh routing metrics, not lamp state).
         if self.data:
             merged = dict(self.data)
             for addr, status in result.items():
                 cmd_time = self._command_timestamps.get(addr, 0)
                 if now - cmd_time > _COMMAND_GRACE_SECS:
+                    existing = merged.get(addr)
+                    if (
+                        existing is not None
+                        and status.is_on is None
+                        and existing.is_on is not None
+                    ):
+                        status = replace(status, is_on=existing.is_on)
                     merged[addr] = status
         else:
             merged = dict(result)
