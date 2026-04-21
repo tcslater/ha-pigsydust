@@ -305,11 +305,20 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
 
         # Merge with existing data. Skip poll results for recently
         # commanded devices (grace period prevents stale overwrite).
+        # Preserve is_on when a 0xDB ping-fill reply lacks on/off state
+        # (0xDB carries mesh routing metrics, not lamp state).
         if self.data:
             merged = dict(self.data)
             for addr, status in result.items():
                 cmd_time = self._command_timestamps.get(addr, 0)
                 if now - cmd_time > _COMMAND_GRACE_SECS:
+                    existing = merged.get(addr)
+                    if (
+                        existing is not None
+                        and status.is_on is None
+                        and existing.is_on is not None
+                    ):
+                        status = replace(status, is_on=existing.is_on)
                     merged[addr] = status
         else:
             merged = dict(result)
