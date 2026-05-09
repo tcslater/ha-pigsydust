@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="splash.png" alt="SAL Pixie" width="400">
-</p>
+# SAL Pixie
 
 Home Assistant custom integration for [SAL Pixie](https://pixieplus.com.au/) BLE mesh wall switches — fully local, no cloud.
 
