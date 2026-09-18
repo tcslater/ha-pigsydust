@@ -81,7 +81,14 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         self._command_timestamps: dict[int, float] = {}
         self._last_push: float = 0
         self._disconnected: bool = False
+        # Addresses eligible for gap-fill pings. Seeded from the device
+        # registry at startup, so it says nothing about whether the
+        # platforms have created entities for an address this session.
         self._known_addresses: set[int] = set()
+        # Addresses that have appeared in coordinator data this session
+        # and have therefore been announced to the platforms (either by
+        # being present at platform setup or via SIGNAL_NEW_DEVICE).
+        self._announced_addresses: set[int] = set()
         self._consecutive_failures: int = 0
         self._issue_raised: bool = False
         self._last_seen: dict[int, float] = {}
@@ -151,6 +158,7 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
                 registry.async_remove_device(device.id)
             self._last_seen.pop(address, None)
             self._known_addresses.discard(address)
+            self._announced_addresses.discard(address)
             if self.data is not None:
                 self.data.pop(address, None)
 
@@ -177,20 +185,40 @@ class PixieCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
             self._issue_raised = False
 
     def _check_new_devices(self, data: dict[int, DeviceStatus]) -> None:
-        """Fire a dispatcher signal for each newly discovered device.
+        """Fire a dispatcher signal for each address new to coordinator data.
 
-        Accumulate into ``_known_addresses`` rather than replacing it —
-        any single poll or push may only carry a subset of the mesh,
-        so wholesale-replace would drop and then re-add every device
-        that happened to be absent from the current data, firing a
-        spurious "new device" event on every such round trip.
-        Stale-device pruning is a separate concern (Stage 6c).
+        "New" is judged against ``_announced_addresses`` — addresses that
+        have already appeared in data this session — and deliberately
+        *not* against ``_known_addresses``. The latter is seeded from the
+        device registry at startup so gap-fill pings can probe quiet
+        devices, which means a registry-remembered address that is absent
+        from the first refresh is "known" without any platform having
+        built entities for it. Addresses bridged in from another mesh
+        (sandy_bridge's ``inject_status``) are always in that position:
+        they cannot answer a local poll, so they first reach data via a
+        push after platform setup. Judged against the seeded set they
+        never fired the signal and their entities stayed ``restored`` /
+        unavailable for the whole session.
+
+        Both sets accumulate rather than being replaced — any single poll
+        or push may only carry a subset of the mesh, so wholesale-replace
+        would drop and then re-add every device that happened to be
+        absent from the current data, firing a spurious "new device"
+        event on every such round trip. Stale-device pruning is a
+        separate concern (Stage 6c).
+
+        Signals sent during the first refresh have no listeners yet; the
+        platforms build those entities from ``coordinator.data`` at setup
+        and connect their listener in the same synchronous step, so an
+        address is never both built at setup and signalled afterwards.
         """
-        new = set(data) - self._known_addresses
+        addresses = set(data)
+        self._known_addresses.update(addresses)
+        new = addresses - self._announced_addresses
         if not new:
             return
-        self._known_addresses.update(new)
-        for address in new:
+        self._announced_addresses.update(new)
+        for address in sorted(new):
             _LOGGER.info("New device discovered: address=%d", address)
             async_dispatcher_send(
                 self.hass,
