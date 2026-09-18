@@ -8,7 +8,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr, issue_registry as ir
+from homeassistant.helpers import (
+    device_registry as dr,
+    entity_registry as er,
+    issue_registry as ir,
+)
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from pigsydust import DeviceStatus
 from pigsydust.crypto import LoginError
@@ -76,6 +80,81 @@ async def test_push_update_fires_new_device_signal(
     await hass.async_block_till_done()
 
     assert 99 in seen
+
+
+async def test_registry_seeded_address_gets_entities_on_first_push(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_pixie_client: MagicMock,
+    mock_bluetooth: dict[str, MagicMock],
+) -> None:
+    """A registry-remembered address absent from the first poll still gets entities.
+
+    Reproduces the sandy_bridge case: address 54 lives on another mesh, so it
+    is in the device registry from an earlier session but can never answer a
+    local poll or ping. It first reaches coordinator data via a push *after*
+    platform setup. seed_from_registry puts it in ``_known_addresses`` before
+    the first refresh; that must not suppress SIGNAL_NEW_DEVICE, otherwise the
+    entities stay ``restored``/unavailable for the whole session.
+    """
+    remote = 54
+    mock_config_entry.add_to_hass(hass)
+    dr.async_get(hass).async_get_or_create(
+        config_entry_id=mock_config_entry.entry_id,
+        identifiers={(DOMAIN, f"{mock_config_entry.entry_id}_{remote}")},
+        name="Bridged light",
+    )
+
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = mock_config_entry.runtime_data.coordinator
+    # Preconditions: seeded as known, but not in data and no live entity.
+    assert remote in coordinator._known_addresses
+    assert remote not in coordinator.data
+    assert hass.states.get(f"light.pixie_switch_{remote}") is None
+
+    seen: list[int] = []
+    async_dispatcher_connect(
+        hass,
+        SIGNAL_NEW_DEVICE.format(entry_id=mock_config_entry.entry_id),
+        lambda address: seen.append(address),
+    )
+
+    push_callback = mock_pixie_client.on_status_update.call_args.args[0]
+    push_callback(_make_status(remote, True))
+    await hass.async_block_till_done()
+
+    assert seen == [remote]
+    ent_reg = er.async_get(hass)
+    domains = {
+        entity.domain
+        for entity in er.async_entries_for_config_entry(
+            ent_reg, mock_config_entry.entry_id
+        )
+        if entity.unique_id.startswith(f"{mock_config_entry.entry_id}_{remote}")
+        or f"_{remote}_" in entity.unique_id
+        or entity.unique_id.endswith(f"_{remote}")
+    }
+    assert {"light", "select", "number", "button", "sensor"} <= domains
+
+    light_entity_id = next(
+        entity.entity_id
+        for entity in er.async_entries_for_config_entry(
+            ent_reg, mock_config_entry.entry_id
+        )
+        if entity.domain == "light" and entity.unique_id.endswith(f"_{remote}")
+    )
+    state = hass.states.get(light_entity_id)
+    assert state is not None
+    assert state.state == "on"
+    assert not state.attributes.get("restored")
+
+    # A second push for the same address must not re-announce it.
+    push_callback(_make_status(remote, False))
+    await hass.async_block_till_done()
+    assert seen == [remote]
+    assert hass.states.get(light_entity_id).state == "off"
 
 
 async def test_poll_skipped_when_push_is_fresh(
@@ -311,6 +390,9 @@ async def test_stale_device_pruned_from_registry(
     await hass.async_block_till_done()
 
     assert registry.async_get_device(identifiers={identifier}) is None
+    # Pruned addresses must be re-announceable: removing the device also
+    # removed its entities, so a later reappearance needs the signal again.
+    assert 2 not in coordinator._announced_addresses
 
 
 async def test_seed_from_registry_populates_last_seen(
